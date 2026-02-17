@@ -27,10 +27,10 @@ echo "✅ Using python: ${PYTHON_BIN}"
 # ============================================================================
 
 TASK_ID=3
-EPOCHS=3
+EPOCHS=1
 MAX_NEW_LEN=10
-NUM_SEEDS=3
-KEEP_CHECKPOINTS="${KEEP_CHECKPOINTS:-0}"
+NUM_SEEDS=1
+KEEP_CHECKPOINTS="${KEEP_CHECKPOINTS:-1}"
 
 # --- Progress tracking (variants x seeds) ---
 TOTAL_RUNS=$(( ${#VARIANT_NAMES[@]} * NUM_SEEDS ))
@@ -90,6 +90,7 @@ VARIANT_NAMES=("baseline" "session" "graph" "full")
 VARIANT_PROFILES=("true" "true" "true" "true")
 VARIANT_SESSIONS=("false" "true" "false" "true")
 VARIANT_GRAPHS=("false" "false" "true" "true")
+# VARIANT_INST_TOKENS=("true" "true" "true" "true")
 
 # ============================================================================
 # FUNCTION: Run single training job
@@ -122,14 +123,13 @@ run_single_experiment() {
 
         "${PYTHON_BIN}" main_profile-slim-GNN.py \
             --task_id ${TASK_ID} \
-            --model_path ../FlanT5-small/ \
+            --model_path ../FlanT5-base/ \
             --emb_model_path ../bge-base-en-v1.5/ \
             --train_file ../LaMP_time_${TASK_ID}_subset_id/train_aug_input.json \
             --dev_file ../LaMP_time_${TASK_ID}_subset_id/dev_profile.json \
             --use_profile ${use_profile} \
             --use_session ${use_session} \
             --use_graph ${use_graph} \
-            --use_inst_token False \
             --use_4bit False \
             --use_8bit False \
             --max_input_len 256 \
@@ -265,10 +265,43 @@ echo "📊 Aggregating results..."
   --num-seeds "${NUM_SEEDS}" \
   --task-id "${TASK_ID}"
 
+# ============================================================================
+# ✅ NEW: EVALUATE CHECKPOINTS FOR ACADEMIC PROOF
+# ============================================================================
+
 echo ""
+echo "🔬 Running checkpoint evaluation for personalization effects..."
+echo ""
+
+EVAL_OUTPUT_FILE="${BASE_OUTPUT}/eval_results_${TIMESTAMP}.json"
+EVAL_TABLE_FILE="${BASE_OUTPUT}/eval_comparison_${TIMESTAMP}.md"
+
+"${PYTHON_BIN}" "$(dirname "$0")/evaluate_ablation_checkpoints.py" \
+  --checkpoints-dir "${CHECKPOINTS_DIR}" \
+  --output-file "${EVAL_OUTPUT_FILE}" \
+  --table-file "${EVAL_TABLE_FILE}" \
+  --task-id "${TASK_ID}" \
+  --max-samples 150
+
+if [ -f "${EVAL_TABLE_FILE}" ]; then
+    echo "✅ Checkpoint evaluation complete!"
+    echo "📋 Comparison table:"
+    cat "${EVAL_TABLE_FILE}"
+else
+    echo "⚠️  Evaluation table not generated"
+fi
+
+echo ""
+
+# ============================================================================
+# FINAL SUMMARY
+# ============================================================================
+
 echo "✅ All experiments completed! (failed=${failed})"
 echo "📊 View results:"
-echo "   - Summary: ${RESULTS_FILE}"
-echo "   - Table: ${TABLE_FILE}"
-echo "   - Individual metrics: ${METRICS_DIR}/"
+echo "   - Training metrics: ${RESULTS_FILE}"
+echo "   - Training table: ${TABLE_FILE}"
+echo "   - Checkpoint eval: ${EVAL_OUTPUT_FILE}"
+echo "   - Comparison table: ${EVAL_TABLE_FILE}"
+echo "   - Individual logs: ${LOGS_DIR}/"
 echo ""

@@ -1,25 +1,17 @@
 #!/bin/bash
 
 task_id=3
-epoch=3
+epoch=2
 len=10
 
-# Optional: check if graph embeddings exist
-GRAPH_EMB=../graph_emb/task_${task_id}_graph.npy
-if [ ! -f "$GRAPH_EMB" ]; then
-  echo "⚠ Graph embeddings not found for task_id=${task_id}. Model will skip GNN."
-fi
-
-# Create log directory if not present
 mkdir -p ./log
 
-# Generate timestamped log filename: output_mac_<taskid>_<YYYYMMDD>_<HHMMSS>.log
 timestamp=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="./log/output_mac_${task_id}_${timestamp}.log"
 
-# Run without deepspeed, on CPU, writing full output to log file
+# ✅ ONLY A/B TESTING FLAGS FOR PERSONALIZATION SOURCES
 python main_profile-slim-GNN.py \
-    --model_path ../FlanT5-small/ \
+    --model_path ../FlanT5-base/ \
     --emb_model_path ../bge-base-en-v1.5/ \
     --train_file ../LaMP_time_${task_id}_subset_id/train_aug_input.json \
     --dev_file ../LaMP_time_${task_id}_subset_id/dev_profile.json \

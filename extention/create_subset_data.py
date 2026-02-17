@@ -10,7 +10,12 @@ SUBSET_SIZE_TRAIN = 500   # desired total samples
 SUBSET_SIZE_DEV = 200     # desired total samples
 SEED = 42
 
-MAX_PROFILE_ITEMS = 9  # only keep first N history entries
+MAX_PROFILE_ITEMS = 50  # only keep first N history entries
+
+# 🆕 Trim profile history size for each question
+# Option A (default): randomly keep between 8 and 15 history items
+# Option B: keep full history (no trimming)
+USE_FULL_HISTORY = False
 
 random.seed(SEED)
 
@@ -63,12 +68,14 @@ def stratified_subset_pair(q_file, o_file, dst_q_file, dst_o_file, subset_size):
     #     if "profile" in q and isinstance(q["profile"], list):
     #         q["profile"] = q["profile"][:MAX_PROFILE_ITEMS]
 
-    # 🆕 Trim profile history size for each question
+
     for q in subset_questions:
         if "profile" in q and isinstance(q["profile"], list):
+            if USE_FULL_HISTORY:
+                continue  # keep all history for this id
             # Pick a random length between 8 and 15
-            max_items = random.randint(8, 15)
-            q["profile"] = q["profile"][:max_items]        
+            max_items = random.randint(15, 40)
+            q["profile"] = q["profile"][:max_items]
 
     # Shuffle to avoid class order bias
     random.shuffle(subset_questions)

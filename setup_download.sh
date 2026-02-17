@@ -14,7 +14,7 @@ export SSL_CERT_FILE="/Users/in22339881/Documents/custom-ca-bundle.pem"
 export REQUESTS_CA_BUNDLE="/Users/in22339881/Documents/custom-ca-bundle.pem"
 
 # ---------------- LaMP-3 Dataset ----------------
-echo "[1/3] Checking LaMP-3 dataset..."
+echo "[1/4] Checking LaMP-3 dataset..."
 if [ -f "${DATA_DIR}/LaMP_time_3/train_questions.json" ] && \
    [ -f "${DATA_DIR}/LaMP_time_3/train_outputs.json" ] && \
    [ -f "${DATA_DIR}/LaMP_time_3/dev_questions.json" ] && \
@@ -84,5 +84,17 @@ else
     hf download google/flan-t5-small --local-dir "${MODEL_DIR}/FlanT5-small"
 fi
 
+
+# ---------- DistilBERT base uncased ----------
+echo "[4/4] Checking distilbert-base-uncased model..."
+if [[ -d "${MODEL_DIR}/distilbert-base-uncased" ]] && [[ "$(ls -A "${MODEL_DIR}/distilbert-base-uncased" 2>/dev/null)" ]]; then
+    echo "✅ distilbert-base-uncased model already exists. Skipping download."
+else
+    echo "⬇ Downloading distilbert-base-uncased model..."
+    mkdir -p "${MODEL_DIR}/distilbert-base-uncased"
+    hf download distilbert/distilbert-base-uncased --local-dir "${MODEL_DIR}/distilbert-base-uncased" || {
+      echo "⚠  Failed to download distilbert-base-uncased — continuing"
+    }
+fi
 
 echo "=== All checks complete ==="

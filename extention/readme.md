@@ -49,3 +49,40 @@ from your existing LaMP‑3 profile data, so these extension modules can get the
 Do you want me to go ahead and update `PersonalDataset_profile.py` for that? That will make the extension modules immediately usable with your dataset.
 
 ---
+
+
+For BERT:
+Visual Interpretation
+┌─────────────────────────────────────────────────────────┐
+│         RATING PREDICTION = Q + PERSONALIZATION         │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  Q (CLS token):                                         │
+│  "What do I think about acting?" → [768-dim vector]    │
+│                                                          │
+│  USER (profile + session + graph):                      │
+│  "User X liked similar acting before" → [768-dim]      │
+│                                                          │
+│  Gate (learned weight):                                 │
+│  "For this Q, trust Q 30% and USER 70%" → scalar       │
+│                                                          │
+│  Final: 0.7 * USER + 0.3 * Q → Rating prediction       │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
+Licensing unknown due to an error.
+Mathematical Notation
+CLS ∈ ℝ^768              # Question embedding
+USER ∈ ℝ^768             # Personalization embedding
+λ ∈ [0,1]                # Gate (learned)
+
+Rating_logits = λ * USER + (1-λ) * CLS
+
+If λ ≈ 0.2:  "Mostly trust the question, light personalization"
+If λ ≈ 0.8:  "Mostly trust the user history"
+If λ ≈ 0.5:  "Balanced between question and user"
+Key Insight ✨
+Your model is learning:
+CLS = What the question is asking
+USER = What the person would typically prefer
+GATE = How much to weight each for THIS specific question
+This is the core idea of personalized LLMs — blend task semantics (Q) with user context (history) intelligently!

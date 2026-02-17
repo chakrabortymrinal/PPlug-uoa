@@ -8,37 +8,62 @@ import numpy as np
 import pickle
 from typing import Optional, Dict, Tuple
 from tqdm import tqdm
+
+# PyTorch Geometric components:
+#  - Data: lightweight graph container holding edge_index and optional x, edge_attr
+#  - NeighborLoader: mini-batch neighborhood sampling for scalable GraphSAGE training
+#  - SAGEConv: GraphSAGE convolution layer
 from torch_geometric.data import Data
 from torch_geometric.loader import NeighborLoader
 from torch_geometric.nn import SAGEConv
+
+# HuggingFace BGE encoder:
+# used here ONLY to embed node texts into initial node features (x) when not already
+# provided by the precomputed LaMP/BGE memmap embeddings.
 from transformers import AutoTokenizer, AutoModel
+
 import torch.nn as nn
 import sys
+
+# NLTK VADER sentiment:
+# - used to create "Sentiment" nodes (Positive/Neutral/Negative)
+# - links review nodes to sentiment nodes for extra relational signal
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
+
+# Ensure VADER lexicon exists (downloads if missing)
 try:
     nltk.data.find('sentiment/vader_lexicon.zip')
 except LookupError:
     nltk.download('vader_lexicon')
 from nltk.sentiment import SentimentIntensityAnalyzer
 
-# -----------------------------
-# CONFIG
-# -----------------------------
-USE_SUBSET = True
-GRAPHSAGE_EPOCHS = 15
-GRAPHSAGE_HIDDEN_DIM = 512
-TASK_ID = 3
+# -----------------------------------------------------------------------------
+# CONFIG (global knobs)
+# -----------------------------------------------------------------------------
+USE_SUBSET = True                  # If True, uses LaMP_time_{TASK_ID}_subset (smaller data)
+GRAPHSAGE_EPOCHS = 15              # How many epochs to train GraphSAGE
+GRAPHSAGE_HIDDEN_DIM = 512         # Hidden dimension inside GraphSAGE
+TASK_ID = 3                        # LaMP task id (LaMP-3 = review rating prediction)
 
 DEV_DATASET_FOLDER_SUBSET = f"LaMP_time_{TASK_ID}_subset"
 FULL_DATASET_FOLDER = f"LaMP_time_{TASK_ID}"
 
+# Output directory for graph assets and embeddings
 GRAPH_DIR = "../graph_emb"
 os.makedirs(GRAPH_DIR, exist_ok=True)
+
+# Cache stores the built graph structure + node metadata, so later stages
+# (embed/train/infer/metrics) can run without rebuilding.
 CACHE_PATH = os.path.join(GRAPH_DIR, f"task_{TASK_ID}_graph_cache.pkl")
+
+# Final node embedding output (after GNN inference)
 SAVE_PATH = os.path.join(GRAPH_DIR, f"task_{TASK_ID}_graph.npy")
+
+# Mapping from history IDs (and review keys) -> graph node index
 MAP_PATH = os.path.join(GRAPH_DIR, f"task_{TASK_ID}_his_to_graph.json")
 
+# Select train/dev question files from subset or full dataset
 if USE_SUBSET:
     TRAIN_FILE = os.path.join("..", DEV_DATASET_FOLDER_SUBSET, "train_questions.json")
     DEV_FILE   = os.path.join("..", DEV_DATASET_FOLDER_SUBSET, "dev_questions.json")
@@ -49,20 +74,30 @@ else:
 print(f"📄 TRAIN_FILE = {TRAIN_FILE}")
 print(f"📄 DEV_FILE   = {DEV_FILE}")
 
-FEATURE_INIT = "bge"
+FEATURE_INIT = "bge"               # Text embedding strategy for nodes that need embeddings
 BGE_MODEL_PATH = "../bge-base-en-v1.5/"
-EMB_DIM = 768
-RESIDUAL_X_WEIGHT = 0.1  # ✅ Reduced from 0.3
+EMB_DIM = 768                      # BGE embedding dimension and graph embedding dimension
+RESIDUAL_X_WEIGHT = 0.1            # (Kept, but not currently used directly in code path shown)
 
+# Choose device for BGE encoding and GNN train/infer
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
+# VADER sentiment analyzer instance
 sia = SentimentIntensityAnalyzer()
 
-# -----------------------------
+# -----------------------------------------------------------------------------
 # UTILS
-# -----------------------------
+# -----------------------------------------------------------------------------
 def load_json_lines(path):
+    """
+    Load either:
+      - JSONL (one JSON per line)
+      - or a standard JSON list file.
+
+    Some LaMP data files are JSON lines, others may be a full JSON array.
+    This loader supports both.
+    """
     with open(path) as f:
         try:
             return [json.loads(line) for line in f]
@@ -71,32 +106,75 @@ def load_json_lines(path):
             return json.load(f)
 
 def _extract_review_from_input(inp: str) -> str:
-    if not isinstance(inp, str): return ""
+    """
+    The LaMP-3 "input" field is often a prompt like:
+      'What is the score ... review: <review text>'
+
+    This function extracts the substring after 'review:'.
+    If no 'review:' exists, returns the whole string as fallback.
+    """
+    if not isinstance(inp, str):
+        return ""
     low = inp.lower()
     k = low.find("review:")
     return inp[k+len("review:"):].strip() if k >= 0 else inp.strip()
 
 def text_to_sentiment(text: str) -> Optional[str]:
+    """
+    Convert raw review text into one of:
+      - "Positive"
+      - "Neutral"
+      - "Negative"
+
+    Uses VADER compound score thresholds.
+    Returns None if input is empty/unusable.
+    """
     if not isinstance(text, str) or not text.strip():
         return None
     score = sia.polarity_scores(text)['compound']
-    if score >= 0.2:  return "Positive"
-    elif score <= -0.2: return "Negative"
-    else: return "Neutral"
+    if score >= 0.2:
+        return "Positive"
+    elif score <= -0.2:
+        return "Negative"
+    else:
+        return "Neutral"
 
-# -----------------------------
+# -----------------------------------------------------------------------------
 # GRAPH BUILD
-# -----------------------------
+# -----------------------------------------------------------------------------
 def build_graph_and_cache():
+    """
+    Stage: build
+    Build a heterogeneous graph (stored as a *homogeneous* edge_index with node types tracked in metadata).
+
+    Node types:
+      - User
+      - Item
+      - Review
+      - Sentiment (3 buckets)
+      - Popularity (3 buckets)
+    Edge relations (undirected via adding both directions):
+      - User --WROTE--> Review
+      - Review --DESCRIBES--> Item
+      - User --RATED--> Item
+      - Review --HAS_POLARITY--> Sentiment
+      - Item --HAS_POP--> Popularity
+      - Review --REVIEW_SIM--> Review  (connect user's reviews together)
+
+    Why Review↔Review edges:
+      - Helps graph capture user-level "cluster" structure
+      - Improves interpretability of graph-only metrics for review similarity
+      - Reduces risk that Review nodes are only connected through User/Item hubs
+    """
     print("🏗 Building graph once and caching...")
 
+    # Schema defines which node maps to create; it also acts like documentation.
     SCHEMA = [
         ("User", "Item", "RATED"),
         ("User", "Review", "WROTE"),
         ("Review", "Item", "DESCRIBES"),
         ("Review", "Sentiment", "HAS_POLARITY"),
         ("Item", "Popularity", "HAS_POP"),
-        # 🔧 NEW: review-review link (same user history)
         ("Review", "Review", "REVIEW_SIM"),
     ]
     REL_WEIGHT = {
@@ -271,6 +349,11 @@ def build_graph_and_cache():
     print(f"✅ Saved his_id_to_row mapping to {GRAPH_DIR}/task_{TASK_ID}_his_id_to_row.json")
 
 def load_cached_graph():
+    """
+    Stage helper:
+    Load cached graph objects from CACHE_PATH.
+    Forces you to run --stage build first if the cache is missing.
+    """
     if not os.path.exists(CACHE_PATH):
         raise FileNotFoundError(f"❌ Cache not found: {CACHE_PATH}. Run with --stage build first.")
     with open(CACHE_PATH, "rb") as f:
@@ -278,10 +361,15 @@ def load_cached_graph():
     print(f"✅ Loaded cached graph from {CACHE_PATH}")
     return data
 
-# -----------------------------
+# -----------------------------------------------------------------------------
 # EMBEDDING
-# -----------------------------
+# -----------------------------------------------------------------------------
 def _mean_pool(last_hidden_state, mask):
+    """
+    Mean pooling used for sentence embedding:
+      - Multiply hidden states by attention mask to ignore padding
+      - Sum and divide by token count
+    """
     mask = mask.unsqueeze(-1).to(last_hidden_state.dtype)
     summed = (last_hidden_state * mask).sum(dim=1)
     denom = mask.sum(dim=1).clamp(min=1e-9)
@@ -347,7 +435,7 @@ def embed_chunk(his_to_graph, edge_index, edge_weight, node_texts, num_nodes, ch
     for bnum,batch in enumerate(tqdm(loader)):
         texts = [node_texts[n.item()] for n in batch.n_id if n.item() not in processed_ids]
         if not texts: continue
-        inp = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=64).to(device)
+        inp = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
         with torch.no_grad():
             out = model(**inp)
             pooled = _mean_pool(out.last_hidden_state, inp["attention_mask"])
@@ -366,13 +454,21 @@ def embed_chunk(his_to_graph, edge_index, edge_weight, node_texts, num_nodes, ch
 # MERGE / TRAIN / INFER / METRICS
 # -----------------------------
 def merge_chunks_to_full(num_nodes):
+    """
+    Stage: merge
+    Convert partial memmap file (task_{TASK_ID}_x_partial.npy) into final x.npy and delete partial.
+    """
     PARTIAL_X_PATH = os.path.join(GRAPH_DIR, f"task_{TASK_ID}_x_partial.npy")
     X_SAVE_PATH = os.path.join(GRAPH_DIR, f"task_{TASK_ID}_x.npy")
     if not os.path.exists(PARTIAL_X_PATH):
         raise FileNotFoundError(f"❌ Missing {PARTIAL_X_PATH}")
-    xp=np.memmap(PARTIAL_X_PATH,dtype=np.float16,mode='r',shape=(num_nodes,EMB_DIM))
-    xf=np.memmap(X_SAVE_PATH,dtype=np.float16,mode='w+',shape=(num_nodes,EMB_DIM))
-    xf[:]=xp[:]; xf.flush()
+
+    xp = np.memmap(PARTIAL_X_PATH, dtype=np.float16, mode='r', shape=(num_nodes, EMB_DIM))
+    xf = np.memmap(X_SAVE_PATH, dtype=np.float16, mode='w+', shape=(num_nodes, EMB_DIM))
+    xf[:] = xp[:]
+    xf.flush()
+
+    # Remove partial to avoid confusion and to free disk
     os.remove(PARTIAL_X_PATH)
     print(f"✅ Merged to {X_SAVE_PATH}")
 
@@ -574,7 +670,10 @@ def compute_metrics_only(num_nodes):
     print("✅ Node count",num_nodes)
 
 def cleanup_gnn_checkpoints(graph_dir):
-    """Remove all GNN checkpoint .pt files after final embedding is saved."""
+    """
+    Remove all graphsage_epoch*.pt checkpoints after infer has produced final embeddings,
+    to keep GRAPH_DIR clean and reduce disk usage.
+    """
     removed = 0
     for fname in os.listdir(graph_dir):
         if fname.startswith("graphsage_epoch") and fname.endswith(".pt"):
@@ -585,19 +684,21 @@ def cleanup_gnn_checkpoints(graph_dir):
 
 def compute_graph_metrics(edge_index, num_nodes):
     """
-    Evaluate embedding structure quality for the trained GNN.
+    Stage: metrics (extended)
+    Evaluate embedding "structure quality":
+      - norm stats
+      - random cosine similarity distribution
+      - neighbor cosine similarity distribution
+      - neighbor-vs-random gap
+      - degree stats
 
-    - Cosine similarity between original and trained embeddings
-    - Neighbor vs random node similarity
-    - Norm statistics
-
-    If cached node types are available, additionally reports the same metrics
-    restricted to Review nodes only (much more interpretable).
+    If node_types exist in cache:
+      - repeat the same analysis restricted to Review nodes only,
+        which is often the most meaningful subset for LaMP-3.
     """
     if not os.path.exists(SAVE_PATH):
         raise FileNotFoundError(f"❌ Missing {SAVE_PATH}. Run --stage infer first.")
 
-    import numpy as np
     from sklearn.metrics.pairwise import cosine_similarity
     import networkx as nx
 
