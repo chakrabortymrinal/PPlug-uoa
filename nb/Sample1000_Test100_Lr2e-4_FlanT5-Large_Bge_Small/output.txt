@@ -1,0 +1,333 @@
+ run_variants_and_log():Current Working Directory:  /content
+=== RUN START: pplug ===
+{
+  "run_id": "20260204_081447",
+  "variant": "pplug",
+  "start_time": "2026-02-04T08:14:47.878925",
+  "log_path": "/content/drive/MyDrive/logs/20260204_081447_pplug.log",
+  "config": {
+    "sample_size": 1000,
+    "test_sample_size": 100,
+    "batch_size": 8,
+    "learning_rate": 0.0002,
+    "num_epochs": 5,
+    "max_histories": 5
+  }
+}
+============================================================
+PPlug: Personalized LLM Implementation
+Based on: LLMs + Persona-Plug = Personalized LLMs
+============================================================
+
+1. Loading datasets...
+LaMP3_Dataset::__init__():Current Working Directory:  /content
+LaMP3_Dataset::__init__():Current Working Directory:  /content
+Train size: 1000, Test size: 100
+
+2. Initializing model...
+Loading weights: 100% 558/558 [00:43<00:00,  9.01it/s, Materializing param=shared.weight]The tied weights mapping and config for this model specifies to tie shared.weight to lm_head.weight, but both are present in the checkpoints, so we will NOT tie them. You should update the config with `tie_word_embeddings=False` to silence this warning
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING:huggingface_hub.utils._http:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+config.json: 100% 777/777 [00:00<00:00, 92.3kB/s]model.safetensors: 100% 438M/438M [00:01<00:00, 273MB/s]Loading weights: 100% 199/199 [00:00<00:00, 1142.98it/s, Materializing param=pooler.dense.weight]BertModel LOAD REPORT from: BAAI/bge-base-en-v1.5
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+Loading weights: 100% 199/199 [00:00<00:00, 1028.69it/s, Materializing param=pooler.dense.weight]BertModel LOAD REPORT from: BAAI/bge-base-en-v1.5
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+tokenizer_config.json: 100% 366/366 [00:00<00:00, 48.6kB/s]vocab.txt:  232k/? [00:00<00:00, 17.0MB/s]tokenizer.json:  711k/? [00:00<00:00, 52.3MB/s]special_tokens_map.json: 100% 125/125 [00:00<00:00, 17.9kB/s]Variant: pplug | Model: PPlugModel
+Total parameters: 1,003,952,640
+Trainable parameters: 111,320,320 (11.09%)
+
+3. Training...
+Epoch 1/5: 100% 125/125 [01:32<00:00,  1.38it/s, loss=9.6076, avg_loss=9.6326]
+Epoch 1 completed. Average loss: 9.6326
+Epoch 2/5: 100% 125/125 [01:30<00:00,  1.31it/s, loss=9.6231, avg_loss=4.8018]
+Epoch 2 completed. Average loss: 9.6037
+Epoch 3/5: 100% 125/125 [01:31<00:00,  1.44it/s, loss=9.6149, avg_loss=3.1974]
+Epoch 3 completed. Average loss: 9.5922
+Epoch 4/5: 100% 125/125 [01:31<00:00,  1.39it/s, loss=9.5804, avg_loss=2.3965]
+Epoch 4 completed. Average loss: 9.5862
+Epoch 5/5: 100% 125/125 [01:31<00:00,  1.33it/s, loss=9.6149, avg_loss=1.9168]
+Epoch 5 completed. Average loss: 9.5838
+
+4. Evaluating...
+
+==================================================
+EVALUATION EXAMPLES
+==================================================
+
+--- Example 1 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: If You Were Me and Lived In...G...
+Predicted: '5' (Cleaned: '5')
+Ground Truth: '5' (Cleaned: '5')
+Match: True
+
+--- Example 2 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: This is more than a cookbook; i...
+Predicted: '5' (Cleaned: '5')
+Ground Truth: '5' (Cleaned: '5')
+Match: True
+
+--- Example 3 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: I LOVE how she evolved from a l...
+Predicted: '5' (Cleaned: '5')
+Ground Truth: '5' (Cleaned: '5')
+Match: True
+
+--- Example 4 ---
+Input: What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: I would like to give this story a 5-star rating but the editing i...
+Predicted: '2' (Cleaned: '2')
+Ground Truth: '3' (Cleaned: '3')
+Match: False
+
+--- Example 5 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: I haven't used the remote funct...
+Predicted: '4' (Cleaned: '4')
+Ground Truth: '5' (Cleaned: '5')
+Match: False
+
+==================================================
+Accuracy: 0.6400
+Mean Absolute Error (MAE): 0.3800
+Root Mean Squared Error (RMSE): 0.6481
+==================================================
+
+============================================================
+Training and Evaluation Complete!
+============================================================
+
+=== METRICS ===
+{
+  "accuracy": 0.64,
+  "mae": 0.38,
+  "rmse": 0.648074069840786
+}
+=== RUN END: pplug ===
+=== RUN START: pplug_graph ===
+{
+  "run_id": "20260204_081447",
+  "variant": "pplug_graph",
+  "start_time": "2026-02-04T08:25:09.614136",
+  "log_path": "/content/drive/MyDrive/logs/20260204_081447_pplug_graph.log",
+  "config": {
+    "sample_size": 1000,
+    "test_sample_size": 100,
+    "batch_size": 8,
+    "learning_rate": 0.0002,
+    "num_epochs": 5,
+    "max_histories": 5
+  }
+}
+============================================================
+PPlug: Personalized LLM Implementation
+Based on: LLMs + Persona-Plug = Personalized LLMs
+============================================================
+
+1. Loading datasets...
+LaMP3_Dataset::__init__():Current Working Directory:  /content
+LaMP3_Dataset::__init__():Current Working Directory:  /content
+Train size: 1000, Test size: 100
+
+2. Initializing model...
+Loading weights: 100% 558/558 [00:00<00:00, 1115.73it/s, Materializing param=shared.weight]The tied weights mapping and config for this model specifies to tie shared.weight to lm_head.weight, but both are present in the checkpoints, so we will NOT tie them. You should update the config with `tie_word_embeddings=False` to silence this warning
+Loading weights: 100% 199/199 [00:00<00:00, 877.55it/s, Materializing param=pooler.dense.weight]BertModel LOAD REPORT from: BAAI/bge-base-en-v1.5
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+Loading weights: 100% 199/199 [00:00<00:00, 909.44it/s, Materializing param=pooler.dense.weight]BertModel LOAD REPORT from: BAAI/bge-base-en-v1.5
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+Variant: pplug_graph | Model: GraphPPlugModel
+Total parameters: 1,025,728,769
+Trainable parameters: 133,096,449 (12.98%)
+
+3. Training...
+Epoch 1/5: 100% 125/125 [02:32<00:00,  1.23s/it, loss=9.6540, avg_loss=9.6263]
+Epoch 1 completed. Average loss: 9.6263
+Epoch 2/5: 100% 125/125 [02:33<00:00,  1.21s/it, loss=9.5703, avg_loss=4.8022]
+Epoch 2 completed. Average loss: 9.6045
+Epoch 3/5: 100% 125/125 [02:36<00:00,  1.28s/it, loss=9.5927, avg_loss=3.1976]
+Epoch 3 completed. Average loss: 9.5928
+Epoch 4/5: 100% 125/125 [02:34<00:00,  1.21s/it, loss=9.5902, avg_loss=2.3980]
+Epoch 4 completed. Average loss: 9.5921
+Epoch 5/5: 100% 125/125 [02:33<00:00,  1.24s/it, loss=9.5563, avg_loss=1.9175]
+Epoch 5 completed. Average loss: 9.5875
+
+4. Evaluating...
+
+==================================================
+EVALUATION EXAMPLES
+==================================================
+
+--- Example 1 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: If You Were Me and Lived In...G...
+Predicted: '5' (Cleaned: '5')
+Ground Truth: '5' (Cleaned: '5')
+Match: True
+
+--- Example 2 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: This is more than a cookbook; i...
+Predicted: '5' (Cleaned: '5')
+Ground Truth: '5' (Cleaned: '5')
+Match: True
+
+--- Example 3 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: I LOVE how she evolved from a l...
+Predicted: '4' (Cleaned: '4')
+Ground Truth: '5' (Cleaned: '5')
+Match: False
+
+--- Example 4 ---
+Input: What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: I would like to give this story a 5-star rating but the editing i...
+Predicted: '2' (Cleaned: '2')
+Ground Truth: '3' (Cleaned: '3')
+Match: False
+
+--- Example 5 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: I haven't used the remote funct...
+Predicted: '4' (Cleaned: '4')
+Ground Truth: '5' (Cleaned: '5')
+Match: False
+
+==================================================
+Accuracy: 0.6000
+Mean Absolute Error (MAE): 0.4200
+Root Mean Squared Error (RMSE): 0.6782
+==================================================
+
+============================================================
+Training and Evaluation Complete!
+============================================================
+
+=== METRICS ===
+{
+  "accuracy": 0.6,
+  "mae": 0.42,
+  "rmse": 0.6782329983125268
+}
+=== RUN END: pplug_graph ===
+=== RUN START: pplug_graph_session ===
+{
+  "run_id": "20260204_081447",
+  "variant": "pplug_graph_session",
+  "start_time": "2026-02-04T08:38:46.761409",
+  "log_path": "/content/drive/MyDrive/logs/20260204_081447_pplug_graph_session.log",
+  "config": {
+    "sample_size": 1000,
+    "test_sample_size": 100,
+    "batch_size": 8,
+    "learning_rate": 0.0002,
+    "num_epochs": 5,
+    "max_histories": 5
+  }
+}
+============================================================
+PPlug: Personalized LLM Implementation
+Based on: LLMs + Persona-Plug = Personalized LLMs
+============================================================
+
+1. Loading datasets...
+LaMP3_Dataset::__init__():Current Working Directory:  /content
+LaMP3_Dataset::__init__():Current Working Directory:  /content
+Train size: 1000, Test size: 100
+
+2. Initializing model...
+Loading weights: 100% 558/558 [00:00<00:00, 1069.96it/s, Materializing param=shared.weight]The tied weights mapping and config for this model specifies to tie shared.weight to lm_head.weight, but both are present in the checkpoints, so we will NOT tie them. You should update the config with `tie_word_embeddings=False` to silence this warning
+Loading weights: 100% 199/199 [00:00<00:00, 829.92it/s, Materializing param=pooler.dense.weight]BertModel LOAD REPORT from: BAAI/bge-base-en-v1.5
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+Loading weights: 100% 199/199 [00:00<00:00, 1089.73it/s, Materializing param=pooler.dense.weight]BertModel LOAD REPORT from: BAAI/bge-base-en-v1.5
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+Variant: pplug_graph_session | Model: SessionGraphPPlugModel
+Total parameters: 1,038,595,842
+Trainable parameters: 36,481,282 (3.51%)
+
+3. Training...
+Epoch 1/5: 100% 125/125 [02:01<00:00,  1.03it/s, loss=9.5381, avg_loss=9.6163]
+Epoch 1 completed. Average loss: 9.6163
+Epoch 2/5: 100% 125/125 [02:00<00:00,  1.04it/s, loss=9.5905, avg_loss=4.7951]
+Epoch 2 completed. Average loss: 9.5902
+Epoch 3/5: 100% 125/125 [02:02<00:00,  1.02it/s, loss=9.6013, avg_loss=3.1954]
+Epoch 3 completed. Average loss: 9.5862
+Epoch 4/5: 100% 125/125 [02:01<00:00,  1.04it/s, loss=9.5994, avg_loss=2.3966]
+Epoch 4 completed. Average loss: 9.5864
+Epoch 5/5: 100% 125/125 [02:01<00:00,  1.08it/s, loss=9.5901, avg_loss=1.9175]
+Epoch 5 completed. Average loss: 9.5874
+
+4. Evaluating...
+
+==================================================
+EVALUATION EXAMPLES
+==================================================
+
+--- Example 1 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: If You Were Me and Lived In...G...
+Predicted: '5' (Cleaned: '5')
+Ground Truth: '5' (Cleaned: '5')
+Match: True
+
+--- Example 2 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: This is more than a cookbook; i...
+Predicted: '5' (Cleaned: '5')
+Ground Truth: '5' (Cleaned: '5')
+Match: True
+
+--- Example 3 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: I LOVE how she evolved from a l...
+Predicted: '5' (Cleaned: '5')
+Ground Truth: '5' (Cleaned: '5')
+Match: True
+
+--- Example 4 ---
+Input: What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: I would like to give this story a 5-star rating but the editing i...
+Predicted: '2' (Cleaned: '2')
+Ground Truth: '3' (Cleaned: '3')
+Match: False
+
+--- Example 5 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: I haven't used the remote funct...
+Predicted: '4' (Cleaned: '4')
+Ground Truth: '5' (Cleaned: '5')
+Match: False
+
+==================================================
+Accuracy: 0.6200
+Mean Absolute Error (MAE): 0.4000
+Root Mean Squared Error (RMSE): 0.6633
+==================================================
+
+============================================================
+Training and Evaluation Complete!
+============================================================
+
+=== METRICS ===
+{
+  "accuracy": 0.62,
+  "mae": 0.4,
+  "rmse": 0.6633249580710799
+}
+=== RUN END: pplug_graph_session ===
