@@ -1,0 +1,41 @@
+=== RUN START: pplug ===
+{
+  "run_id": "20260214_184849",
+  "variant": "pplug",
+  "start_time": "2026-02-14T18:48:49.885579",
+  "log_path": "/content/drive/MyDrive/logs/20260214_184849_pplug.log",
+  "config": {
+    "sample_size": 1000,
+    "test_sample_size": 100,
+    "batch_size": 8,
+    "learning_rate": 0.0002,
+    "num_epochs": 10,
+    "max_histories": 5
+  }
+}
+============================================================
+PPlug: Personalized LLM Implementation
+Based on: LLMs + Persona-Plug = Personalized LLMs
+============================================================
+
+1. Loading datasets...
+LaMP3_Dataset::__init__():Current Working Directory:  /content
+LaMP3_Dataset::__init__():Current Working Directory:  /content
+Train size: 1000, Test size: 100
+
+2. Initializing model...
+Variant: pplug | Model: PPlugModel
+Total parameters: 3,074,494,976
+Trainable parameters: 115,255,552 (3.75%)
+
+3. Training...
+
+Epoch 1 completed. Average loss: 9.8369
+
+Epoch 2 completed. Average loss: 9.8207
+
+Epoch 3 completed. Average loss: 9.8078
+
+Epoch 4 completed. Average loss: 9.8072
+
+Epoch 5 completed. Average loss: 9.8054
