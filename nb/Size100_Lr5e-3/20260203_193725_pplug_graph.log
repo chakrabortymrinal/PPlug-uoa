@@ -1,0 +1,95 @@
+=== RUN START: pplug_graph ===
+{
+  "run_id": "20260203_193725",
+  "variant": "pplug_graph",
+  "start_time": "2026-02-03T19:38:36.706919",
+  "log_path": "/content/drive/MyDrive/logs/20260203_193725_pplug_graph.log",
+  "config": {
+    "sample_size": 100,
+    "test_sample_size": 40,
+    "batch_size": 8,
+    "learning_rate": 0.005,
+    "num_epochs": 5,
+    "max_histories": 5
+  }
+}
+============================================================
+PPlug: Personalized LLM Implementation
+Based on: LLMs + Persona-Plug = Personalized LLMs
+============================================================
+
+1. Loading datasets...
+LaMP3_Dataset::__init__():Current Working Directory:  /content
+LaMP3_Dataset::__init__():Current Working Directory:  /content
+Train size: 100, Test size: 40
+
+2. Initializing model...
+Variant: pplug_graph | Model: GraphPPlugModel
+Total parameters: 316,390,017
+Trainable parameters: 129,946,625 (41.07%)
+
+3. Training...
+
+Epoch 1 completed. Average loss: 9.3114
+
+Epoch 2 completed. Average loss: 9.2357
+
+Epoch 3 completed. Average loss: 9.1938
+
+Epoch 4 completed. Average loss: 9.1659
+
+Epoch 5 completed. Average loss: 9.1446
+
+4. Evaluating...
+
+==================================================
+EVALUATION EXAMPLES
+==================================================
+
+--- Example 1 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: If You Were Me and Lived In...G...
+Predicted: '5' (Cleaned: '5')
+Ground Truth: '5' (Cleaned: '5')
+Match: True
+
+--- Example 2 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: This is more than a cookbook; i...
+Predicted: '4' (Cleaned: '4')
+Ground Truth: '5' (Cleaned: '5')
+Match: False
+
+--- Example 3 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: I LOVE how she evolved from a l...
+Predicted: '3' (Cleaned: '3')
+Ground Truth: '5' (Cleaned: '5')
+Match: False
+
+--- Example 4 ---
+Input: What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: I would like to give this story a 5-star rating but the editing i...
+Predicted: '3' (Cleaned: '3')
+Ground Truth: '3' (Cleaned: '3')
+Match: True
+
+--- Example 5 ---
+Input: Predict the product rating (1-5): What is the score of the following review on a scale of 1 to 5? just answer with 1, 2, 3, 4, or 5 without further explanation. review: I haven't used the remote funct...
+Predicted: '3' (Cleaned: '3')
+Ground Truth: '5' (Cleaned: '5')
+Match: False
+
+==================================================
+Accuracy: 0.3500
+Mean Absolute Error (MAE): 1.0250
+Root Mean Squared Error (RMSE): 1.3874
+==================================================
+
+============================================================
+Training and Evaluation Complete!
+============================================================
+
+=== METRICS ===
+{
+  "accuracy": 0.35,
+  "mae": 1.025,
+  "rmse": 1.3874436925511608
+}
+=== RUN END: pplug_graph ===
