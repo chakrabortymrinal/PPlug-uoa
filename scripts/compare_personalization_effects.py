@@ -64,8 +64,8 @@ SHOW_GRAPH = True
 # -------------------------------------------------------------------------
 FORCE_PERS_DEMO = True          # master switch
 FORCE_GATE_VALUE = 0.98         # 0..1 (use ~0.95-1.0 to emphasize persona)
-PERS_SCALE = 3.0               # multiplies persona contribution when available
-GEN_TEMPERATURE = 0.7           # <1 amplifies differences; try 0.5-0.9
+PERS_SCALE = 7.0               # multiplies persona contribution when available
+GEN_TEMPERATURE = 0.8           # <1 amplifies differences; try 0.5-0.9
 GEN_TOP_P = 1.0                 # keep 1.0 for deterministic-ish; reduce for diversity
 GEN_NUM_BEAMS = 1               # beams can wash out tiny differences; try 1 or 3   
 

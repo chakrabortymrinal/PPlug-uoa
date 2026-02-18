@@ -28,6 +28,7 @@ import torch.nn as nn
 #  - PersonalLLM_Slim wraps Flan-T5 + BGE + (optional) profile/session/graph fusion
 from PersonalDataset_profile_GNN import PersonalDataset
 from ModelForPer_slim_GNN import PersonalLLM_Slim   # <-- updated slim model
+from ModelForPer_slim_GNN_stageA_B import PersonalLLM_Slim_StageAB  # <-- ablation version of slim model
 
 # Eval logging utilities:
 #  - extract_rating_1_to_5: parse rating output from generated text
@@ -652,7 +653,8 @@ def train_model(model_args, data_args, training_args):
     # -------------------------------------------------------------------------
     # A/B testing flags control which personalization sources contribute.
     # "Internal architecture" flags are set to ON (always use fusion components).
-    model = PersonalLLM_Slim(
+    #PersonalLLM_Slim_StageAB or PersonalLLM_Slim
+    model = PersonalLLM_Slim_StageAB(
         llm_model=llm_model_loaded,
         emb_model=emb_model,
         llm_tokenizer=llm_tokenizer,
