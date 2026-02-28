@@ -144,7 +144,8 @@ def text_to_sentiment(text: str) -> Optional[str]:
 # -----------------------------------------------------------------------------
 def build_graph_and_cache():
     """
-    Stage: build
+    ✅ CHANGED: Only connect reviews that are semantically similar (not all reviews from same user)
+    def build_graph_and_cache():
     Build a heterogeneous graph (stored as a *homogeneous* edge_index with node types tracked in metadata).
 
     Node types:
@@ -168,24 +169,24 @@ def build_graph_and_cache():
     """
     print("🏗 Building graph once and caching...")
 
-    # Schema defines which node maps to create; it also acts like documentation.
     SCHEMA = [
         ("User", "Item", "RATED"),
         ("User", "Review", "WROTE"),
         ("Review", "Item", "DESCRIBES"),
         ("Review", "Sentiment", "HAS_POLARITY"),
         ("Item", "Popularity", "HAS_POP"),
-        ("Review", "Review", "REVIEW_SIM"),
+        ("Review", "Review", "REVIEW_SIM"),  # ✅ Now selective
     ]
+    
     REL_WEIGHT = {
         "RATED":        1.0,
         "WROTE":        1.2,
-        "DESCRIBES":    0.8,
-        "HAS_POLARITY": 0.7,
-        "HAS_POP":      0.5,
-        # ✅ Increase from 0.4 → allow stronger review clustering
-        "REVIEW_SIM":   0.8,
+        "DESCRIBES":    0.9,  # ✅ Increased from 0.8
+        "HAS_POLARITY": 0.6,  # ✅ Decreased from 0.7
+        "HAS_POP":      0.4,  # ✅ Decreased from 0.5
+        "REVIEW_SIM":   1.5,  # ✅ INCREASED: Make review similarity edges more important
     }
+    
     node_index = {}
     node_maps = {t: {} for t, _, _ in SCHEMA} | {t: {} for _, t, _ in SCHEMA}
     node_texts = {t: {} for t, _, _ in SCHEMA} | {t: {} for _, t, _ in SCHEMA}
@@ -193,7 +194,8 @@ def build_graph_and_cache():
     edges, edge_wts = [], []
     his_to_graph, item_freq = {}, {}
 
-    # 🔧 NEW: keep list of Review node ids per user, to connect them
+    # ✅ NEW: Track review embeddings for similarity-based connections
+    review_embeddings = {}  # {review_id: embedding}
     user_to_reviews = {}
 
     def add_node(typ, key, text=None):
@@ -211,18 +213,59 @@ def build_graph_and_cache():
         edges.append((s, t)); edges.append((t, s))
         edge_wts.append(w); edge_wts.append(w)
 
-    def _connect_review_to_user_history(uid: int, rid: int):
+    # ✅ NEW: Compute BGE embedding for text (only when needed for similarity)
+    def _embed_text_bge(text: str) -> np.ndarray:
+        """Lazy-load BGE and embed single text"""
+        if not hasattr(_embed_text_bge, 'model'):
+            from transformers import AutoTokenizer, AutoModel
+            _embed_text_bge.tokenizer = AutoTokenizer.from_pretrained(BGE_MODEL_PATH)
+            _embed_text_bge.model = AutoModel.from_pretrained(BGE_MODEL_PATH).to(device).eval()
+        
+        with torch.no_grad():
+            inp = _embed_text_bge.tokenizer(
+                text, return_tensors="pt", padding=True, truncation=True, max_length=512
+            ).to(device)
+            out = _embed_text_bge.model(**inp)
+            pooled = _mean_pool(out.last_hidden_state, inp["attention_mask"])
+            emb = torch.nn.functional.normalize(pooled, p=2, dim=1)
+        return emb[0].cpu().numpy()
+
+    def _connect_similar_reviews_only(uid: int, rid: int, review_text: str):
         """
-        Add Review↔Review edges between this review and the user's previous reviews.
-        This creates Review-Review adjacency so review-only graph metrics make sense.
+        ✅ CHANGED: Only connect this review to user's MOST SIMILAR past reviews (top-3)
+        Instead of connecting to ALL reviews (which creates dense cliques)
         """
-        prev = user_to_reviews.get(uid, [])
-        for pr in prev:
-            if pr == rid:
-                continue
-            add_edge(rid, pr, "REVIEW_SIM")
-        prev.append(rid)
-        user_to_reviews[uid] = prev
+        if not review_text or len(review_text.strip()) < 10:
+            return  # Skip empty/short reviews
+        
+        # Embed current review
+        current_emb = _embed_text_bge(review_text)
+        review_embeddings[rid] = current_emb
+        
+        prev_reviews = user_to_reviews.get(uid, [])
+        if not prev_reviews:
+            user_to_reviews[uid] = [rid]
+            return
+        
+        # Compute similarity to all previous reviews
+        similarities = []
+        for prev_rid in prev_reviews:
+            if prev_rid not in review_embeddings:
+                continue  # Skip if embedding not available
+            prev_emb = review_embeddings[prev_rid]
+            sim = np.dot(current_emb, prev_emb)  # Cosine similarity (both normalized)
+            similarities.append((prev_rid, sim))
+        
+        # ✅ Connect only to top-K most similar reviews (K=3)
+        TOP_K_SIMILAR = 3
+        SIMILARITY_THRESHOLD = 0.3  # Only connect if similarity > 0.3
+        
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        for prev_rid, sim in similarities[:TOP_K_SIMILAR]:
+            if sim > SIMILARITY_THRESHOLD:
+                add_edge(rid, prev_rid, "REVIEW_SIM")
+        
+        user_to_reviews[uid] = prev_reviews + [rid]
 
     def get_popularity_bucket(item_key):
         freq = item_freq.get(item_key, 0)
@@ -254,8 +297,8 @@ def build_graph_and_cache():
         add_edge(rid, iid, "DESCRIBES")
         add_edge(uid, iid, "RATED")
 
-        # 🔧 NEW: connect this review to user's review history (Review↔Review edges)
-        _connect_review_to_user_history(uid, rid)
+        # ✅ CHANGED: Selective review connections
+        _connect_similar_reviews_only(uid, rid, rtext)
 
         if rtext:
             s = text_to_sentiment(rtext)
@@ -267,10 +310,9 @@ def build_graph_and_cache():
         pid = add_node("Popularity", p, p)
         add_edge(iid, pid, "HAS_POP")
 
-        # 🔧 NEW: Add the profile (historical) reviews as Review nodes too
+        # ✅ CHANGED: Process profile reviews with selective connections
         if "profile" in entry and isinstance(entry["profile"], list):
             for his in entry["profile"]:
-                # Each historical review ID and text
                 hid = str(his.get("id"))
                 htext = his.get("text", "")
                 if not hid or not htext:
@@ -278,14 +320,11 @@ def build_graph_and_cache():
 
                 h_rid = add_node("Review", hid, htext)
                 his_to_graph[hid] = h_rid
-
-                # Link current user to this review node
                 add_edge(uid, h_rid, "WROTE")
 
-                # 🔧 NEW: connect profile review to user's review history too
-                _connect_review_to_user_history(uid, h_rid)
+                # ✅ Selective review connections
+                _connect_similar_reviews_only(uid, h_rid, htext)
 
-                # Optionally, capture sentiment and popularity info
                 s = text_to_sentiment(htext)
                 if s:
                     sid = add_node("Sentiment", s, s)
@@ -479,24 +518,24 @@ def train_gnn(edge_index, edge_weight, num_nodes):
     xt = torch.tensor(x.astype(np.float32))
     data = Data(x=xt, edge_index=edge_index, edge_attr=edge_weight).to(device)
 
-    # --- Load original profile embeddings for alignment ---
-    PROFILE_INIT_PATH = os.path.join(GRAPH_DIR, f"task_{TASK_ID}_profile_init.npy")
-    if os.path.exists(PROFILE_INIT_PATH):
-        profile_init = torch.tensor(np.load(PROFILE_INIT_PATH)).to(device)
-        print(f"Loaded profile_init embeddings for alignment: {profile_init.shape}")
-    else:
-        profile_init = None
-
+    # ✅ REMOVED: profile_init alignment (was conflicting with graph structure learning)
+    
     class SAGE(nn.Module):
         def __init__(self):
             super().__init__()
             self.c1 = SAGEConv(EMB_DIM, GRAPHSAGE_HIDDEN_DIM)
             self.c2 = SAGEConv(GRAPHSAGE_HIDDEN_DIM, EMB_DIM)
-            self.drop = nn.Dropout(0.2)
+            self.drop = nn.Dropout(0.3)  # ✅ Increased from 0.2
             self.ln1 = nn.LayerNorm(GRAPHSAGE_HIDDEN_DIM)
+            
+            # ✅ NEW: Projection head for contrastive learning
+            self.proj = nn.Sequential(
+                nn.Linear(EMB_DIM, GRAPHSAGE_HIDDEN_DIM),
+                nn.ReLU(),
+                nn.Linear(GRAPHSAGE_HIDDEN_DIM, 256)
+            )
 
         def forward(self, x, edge_index, w=None):
-            # 🔧 FIX: Apply residual BEFORE normalization
             try:
                 h = self.c1(x, edge_index, edge_weight=w).relu()
             except TypeError:
@@ -509,102 +548,115 @@ def train_gnn(edge_index, edge_weight, num_nodes):
             except TypeError:
                 h = self.c2(h, edge_index)
 
-            # ✅ FIX: Residual connection WITHOUT immediate normalization
-            h_res = 0.70 * h + 0.30 * x  # 70% GNN output, 30% input
-            
-            # ✅ FIX: Normalize AFTER residual mixing
+            # ✅ CHANGED: Reduce residual connection from 30% → 10%
+            h_res = 0.90 * h + 0.10 * x  # Let GNN dominate
             return torch.nn.functional.normalize(h_res, p=2, dim=1)
+        
+        def get_projection(self, h):
+            """For contrastive loss only"""
+            return torch.nn.functional.normalize(self.proj(h), p=2, dim=1)
 
     model = SAGE().to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-    loader = NeighborLoader(data, num_neighbors=[5, 3], batch_size=128, shuffle=True)
-
-    # 🔧 NEW: epoch-based warmup for alignment so it doesn't fight early training
-    def _align_weight(epoch_idx: int) -> float:
-        # ✅ NEW: Start at 0, ramp to 0.10 only
-        if epoch_idx < 2:
-            return 0.0  # No alignment for first 2 epochs
-        elif epoch_idx < 5:
-            return 0.05 * (epoch_idx - 1)  # Ramp 0 → 0.10
-        else:
-            return 0.10  # Cap at 0.10
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-3)  # ✅ Lower LR, higher WD
+    
+    # ✅ NEW: Cosine annealing scheduler
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=GRAPHSAGE_EPOCHS)
+    
+    loader = NeighborLoader(data, num_neighbors=[10, 5], batch_size=256, shuffle=True)  # ✅ More neighbors
 
     for epoch in range(GRAPHSAGE_EPOCHS):
         model.train()
         total_loss = 0.0
 
-        w_align = _align_weight(epoch)
-
         for batch in loader:
             optimizer.zero_grad()
 
-            pred = model(batch.x, batch.edge_index, getattr(batch, "edge_attr", None))
-            target = torch.nn.functional.normalize(batch.x, p=2, dim=1)
-
-            mask = batch.x.norm(dim=1) > 1e-6
-            cos_loss = 1 - torch.nn.functional.cosine_similarity(pred[mask], target[mask]).mean()
-
-            # 🔧 CHANGE: degree-weighted neighbor smoothing loss (reduces hub domination)
-            src, dst = batch.edge_index
-
+            # Get GNN embeddings
+            h = model(batch.x, batch.edge_index, getattr(batch, "edge_attr", None))
+            
+            # ✅ NEW: Contrastive loss (InfoNCE-style)
+            # Positive pairs: connected nodes
+            # Negative pairs: random non-neighbors
+            
+            src, dst = batch.edge_index[:, :batch.num_edges]  # Only real edges from this batch
+            
+            # Get edge weights
             e_w = getattr(batch, "edge_attr", None)
             if e_w is None:
-                e_w = torch.ones(src.size(0), device=pred.device, dtype=pred.dtype)
+                e_w = torch.ones(src.size(0), device=h.device, dtype=h.dtype)
             else:
-                e_w = e_w.to(pred.dtype).clamp(min=0.05)
-
-            deg = torch.bincount(src, minlength=pred.size(0)).float().clamp(min=1.0)
-            w = (1.0 / torch.sqrt(deg[src] * deg[dst])).to(pred.dtype).detach()
-
-            nb_cos = torch.nn.functional.cosine_similarity(pred[src], pred[dst])
-            nb_loss = ((1.0 - nb_cos) * w * e_w).mean()
-
-            # --- Cosine alignment loss with profile embeddings ---
-            align_loss = 0.0
-            if profile_init is not None:
-                batch_indices = batch.n_id if hasattr(batch, "n_id") else torch.arange(pred.size(0), device=pred.device)
-                valid_idx = (batch_indices < profile_init.size(0))
-                if valid_idx.any():
-                    align_loss = 1 - torch.nn.functional.cosine_similarity(
-                        pred[valid_idx], profile_init[batch_indices[valid_idx]]
-                    ).mean()
-
-            # --- NEW: Add contrastive loss to prevent collapse ---
-            # Sample random non-neighbor pairs
-            num_neg = min(128, pred.size(0))
-            rand_idx = torch.randperm(pred.size(0), device=pred.device)[:num_neg]
-            neg_pairs = torch.combinations(rand_idx, r=2)
-
-            if neg_pairs.size(0) > 0:
-                neg_src, neg_dst = neg_pairs[:, 0], neg_pairs[:, 1]
-                neg_sim = torch.nn.functional.cosine_similarity(pred[neg_src], pred[neg_dst])
-                # Penalize high similarity between random pairs
-                contrast_loss = torch.clamp(neg_sim - 0.3, min=0.0).mean()  # Push random pairs below 0.3
+                e_w = e_w[:batch.num_edges].to(h.dtype).clamp(min=0.1)  # ✅ Min weight 0.1
+            
+            # Project to contrastive space
+            z = model.get_projection(h)
+            
+            # Positive similarity (connected nodes should be similar)
+            pos_sim = torch.nn.functional.cosine_similarity(z[src], z[dst])
+            pos_loss = ((1.0 - pos_sim) * e_w).mean()  # Weighted by edge importance
+            
+            # ✅ NEW: Negative sampling (nodes from different neighborhoods)
+            num_neg = min(512, h.size(0))
+            neg_idx1 = torch.randint(0, h.size(0), (num_neg,), device=h.device)
+            neg_idx2 = torch.randint(0, h.size(0), (num_neg,), device=h.device)
+            
+            # Filter out accidental positive pairs (rare but possible)
+            edge_set = set(zip(src.cpu().tolist(), dst.cpu().tolist()))
+            mask = torch.tensor([
+                (i1.item(), i2.item()) not in edge_set 
+                for i1, i2 in zip(neg_idx1, neg_idx2)
+            ], device=h.device)
+            
+            if mask.sum() > 0:
+                neg_sim = torch.nn.functional.cosine_similarity(z[neg_idx1[mask]], z[neg_idx2[mask]])
+                # Push negatives below 0.3 threshold
+                neg_loss = torch.clamp(neg_sim - 0.25, min=0.0).mean()
             else:
-                contrast_loss = 0.0
-
-            # 🔧 UPDATED: Add contrastive term
-            loss = 0.75 * nb_loss + w_align * align_loss + 0.15 * contrast_loss
+                neg_loss = 0.0
+            
+            # ✅ NEW: Diversity regularization (prevent collapse to single embedding)
+            # Maximize variance of embeddings within batch
+            h_std = h.std(dim=0).mean()
+            diversity_loss = torch.clamp(0.5 - h_std, min=0.0)  # Penalize if std < 0.5
+            
+            # ✅ CHANGED: New loss composition
+            loss = (
+                0.60 * pos_loss +      # Neighbor similarity
+                0.25 * neg_loss +       # Negative contrast
+                0.15 * diversity_loss   # Prevent collapse
+            )
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)  # ✅ Tighter clipping
             optimizer.step()
             total_loss += loss.item()
 
+        scheduler.step()  # ✅ LR decay
+        
         avg_loss = total_loss / len(loader)
-        print(f"📉 Epoch {epoch + 1}/{GRAPHSAGE_EPOCHS} loss={avg_loss:.4f} (align_w={w_align:.3f})")
+        current_lr = scheduler.get_last_lr()[0]
+        print(f"📉 Epoch {epoch + 1}/{GRAPHSAGE_EPOCHS} loss={avg_loss:.4f} lr={current_lr:.6f}")
+        
+        # Save checkpoint
         torch.save(model.state_dict(), os.path.join(GRAPH_DIR, f"graphsage_epoch{epoch + 1}.pt"))
-
-        # --- Print cosine similarity between GNN output and profile_init ---
-        if profile_init is not None:
+        
+        # ✅ NEW: Embedding quality metrics
+        if (epoch + 1) % 3 == 0:
             model.eval()
             with torch.no_grad():
                 pred_all = model(data.x, data.edge_index, getattr(data, "edge_attr", None))
-                valid_idx = torch.arange(min(pred_all.size(0), profile_init.size(0)), device=pred_all.device)
-                cos_sim = torch.nn.functional.cosine_similarity(
-                    pred_all[valid_idx], profile_init[valid_idx]
+                
+                # Check embedding diversity
+                emb_std = pred_all.std(dim=0).mean().item()
+                emb_norm = pred_all.norm(dim=1).mean().item()
+                
+                # Check neighbor similarity
+                sample_edges = torch.randperm(edge_index.size(1))[:1000]
+                src_s, dst_s = edge_index[:, sample_edges]
+                nb_sim = torch.nn.functional.cosine_similarity(
+                    pred_all[src_s], pred_all[dst_s]
                 ).mean().item()
-                print(f"🔗 Cosine similarity (GNN vs profile_init) after epoch {epoch + 1}: {cos_sim:.4f}")
+                
+                print(f"   📊 Embedding std={emb_std:.4f} norm={emb_norm:.4f} neighbor_sim={nb_sim:.4f}")
 
 def infer_gnn(edge_index, edge_weight, num_nodes, his_to_graph):
     print("🚀 Inferring final GNN embeddings")
@@ -620,14 +672,21 @@ def infer_gnn(edge_index, edge_weight, num_nodes, his_to_graph):
     ck = ckpts[-1]
     print(f"📂 Loading checkpoint: {ck}")
 
-    # ✅ FIX: Match training architecture (add LayerNorm layers)
+    # ✅ FIX: Match training architecture (add LayerNorm and projection head)
     class SAGE(nn.Module):
         def __init__(self):
             super().__init__()
             self.c1 = SAGEConv(EMB_DIM, GRAPHSAGE_HIDDEN_DIM)
             self.c2 = SAGEConv(GRAPHSAGE_HIDDEN_DIM, EMB_DIM)
-            self.drop = nn.Dropout(0.2)
+            self.drop = nn.Dropout(0.3)
             self.ln1 = nn.LayerNorm(GRAPHSAGE_HIDDEN_DIM)
+            
+            # ✅ NEW: Projection head for contrastive learning
+            self.proj = nn.Sequential(
+                nn.Linear(EMB_DIM, GRAPHSAGE_HIDDEN_DIM),
+                nn.ReLU(),
+                nn.Linear(GRAPHSAGE_HIDDEN_DIM, 256)
+            )
 
         def forward(self, x, edge_index, w=None):
             try:
@@ -643,8 +702,12 @@ def infer_gnn(edge_index, edge_weight, num_nodes, his_to_graph):
                 h = self.c2(h, edge_index)
 
             # ✅ FIX: Match training architecture
-            h_res = 0.70 * h + 0.30 * x
+            h_res = 0.90 * h + 0.10 * x
             return torch.nn.functional.normalize(h_res, p=2, dim=1)
+        
+        def get_projection(self, h):
+            """For contrastive loss only"""
+            return torch.nn.functional.normalize(self.proj(h), p=2, dim=1)
 
     model = SAGE().to(device)
     model.load_state_dict(torch.load(os.path.join(GRAPH_DIR, ck), map_location=device))

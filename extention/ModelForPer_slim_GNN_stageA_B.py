@@ -1,12 +1,56 @@
 import os
 import json
 from typing import Optional, Dict, Any, Tuple
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 from transformers.modeling_outputs import BaseModelOutput
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+@dataclass
+class FinetuneConfig:
+    tune_llm: bool = False
+    tune_emb: bool = False
+    tune_inst_token: bool = True
+    tune_align_mlps: bool = True
+    tune_session_encoder: bool = True
+    tune_cross_attn: bool = True
+    tune_gate: bool = True
+    llm_trainable_regex: Optional[str] = None
+    emb_trainable_regex: Optional[str] = None
+
+
+@dataclass
+class TrainHyperparams:
+    """
+    Central block for training knobs.
+    Optimizer LRs are used by get_param_groups().
+    """
+    # Learning rates (used for optimizer param groups)
+    lr_default: float = 1e-4
+    lr_gate: float = 1.37e-04  # Optimized from 2.37e-04
+    lr_cross_attn: float = 8.64e-05  # Optimized from 4.46e-04
+    lr_align: float = 1.29e-04  # Optimized from 2.70e-04
+    lr_session: float = 1.22e-04  # Optimized from 1.98e-04
+    lr_llm: float = 1e-5
+    lr_emb: float = 1e-5
+
+    weight_decay: float = 0.00994  # Optimized from 0.060
+
+    # Gate init / stability
+    gate_bias_init: float = 0.296  # Optimized from -0.766 (NOTE: Major shift from negative to positive!)
+    gate_temperature_init: float = 1.220  # Optimized from 0.487
+    gate_temperature_min: float = 0.1
+    gate_temperature_max: float = 2.0
+
+    # Used by your existing callback utilities
+    max_grad_norm: float = 0.805  # Optimized from 1.80
+    grad_norm_check_steps: int = 50
+    warmup_steps: int = 50  # Confirmed optimal (unchanged)
+    loss_ema_alpha: float = 0.05
 
 
 class SinusoidalPositionalEncoding(nn.Module):
@@ -70,6 +114,8 @@ class PersonalLLM_Slim_StageAB(nn.Module):
         cross_num_heads: int = 8,
         graph_dir: str = "../graph_emb",
         bge_emb_dir: str = "../bge_emb",
+        finetune: Optional[FinetuneConfig] = None,
+        train_hp: Optional[TrainHyperparams] = None,
     ):
         super().__init__()
         self.llm_model = llm_model
@@ -81,6 +127,10 @@ class PersonalLLM_Slim_StageAB(nn.Module):
         self.task_id = task_id
 
         self.bge_emb_dir = bge_emb_dir
+
+        # Central config blocks
+        self.finetune = finetune or FinetuneConfig()
+        self.train_hp = train_hp or TrainHyperparams()
 
         # A/B toggles (must match main_profile flags)
         self.use_profile = bool(use_profile)
@@ -105,7 +155,7 @@ class PersonalLLM_Slim_StageAB(nn.Module):
             self.emb_emb_size = self.emb_model.get_input_embeddings().embedding_dim
 
         # ---------------------------------------------------------------------
-        # Freeze base models (matches current project approach)
+        # Freeze base models by default (can be overridden by finetune policy)
         # ---------------------------------------------------------------------
         for p in self.llm_model.parameters():
             p.requires_grad = False
@@ -189,23 +239,136 @@ class PersonalLLM_Slim_StageAB(nn.Module):
         # Gate outputs a per-token scalar gate in [0,1]
         if self.use_gate:
             self.gate = nn.Linear(self.llm_emb_size * 2, 1)
-            nn.init.constant_(self.gate.bias, -1.0)  # conservative start: prefer task tokens
-            self.gate_temperature = nn.Parameter(torch.tensor(1.0))
+            nn.init.constant_(self.gate.bias, float(self.train_hp.gate_bias_init))
+            self.gate_temperature = nn.Parameter(torch.tensor(float(self.train_hp.gate_temperature_init)))
         else:
             self.gate = None
             self.gate_temperature = None
 
+        self._apply_finetune_policy()
+
         # ---------------------------------------------------------------------
         # Diagnostics buffers expected by callbacks / your earlier question
         # ---------------------------------------------------------------------
-        self.max_grad_norm = 1.0
-        self.grad_norm_check_steps = 50
-        self.warmup_steps = 100
-        self.loss_ema_alpha = 0.05
+        self.max_grad_norm = float(self.train_hp.max_grad_norm)
+        self.grad_norm_check_steps = int(self.train_hp.grad_norm_check_steps)
+        self.warmup_steps = int(self.train_hp.warmup_steps)
+        self.loss_ema_alpha = float(self.train_hp.loss_ema_alpha)
 
         self._loss_ema = None
         self._grad_norms = []  # <-- your earlier question: store grad norms over time
         self._gate_means = []
+
+    # -------------------------------------------------------------------------
+    # Finetune / optimizer utilities
+    # -------------------------------------------------------------------------
+    def _apply_finetune_policy(self) -> None:
+        """
+        Applies FinetuneConfig by setting requires_grad on submodules/params.
+
+        Notes:
+          - By default, base llm_model and emb_model are frozen above.
+          - This method selectively unfreezes components based on self.finetune.
+        """
+        import re
+
+        # Base models
+        if self.finetune.tune_llm:
+            if self.finetune.llm_trainable_regex:
+                pat = re.compile(self.finetune.llm_trainable_regex)
+                for name, p in self.llm_model.named_parameters():
+                    p.requires_grad = bool(pat.search(name))
+            else:
+                for p in self.llm_model.parameters():
+                    p.requires_grad = True
+        else:
+            for p in self.llm_model.parameters():
+                p.requires_grad = False
+
+        if self.finetune.tune_emb:
+            if self.finetune.emb_trainable_regex:
+                pat = re.compile(self.finetune.emb_trainable_regex)
+                for name, p in self.emb_model.named_parameters():
+                    p.requires_grad = bool(pat.search(name))
+            else:
+                for p in self.emb_model.parameters():
+                    p.requires_grad = True
+        else:
+            for p in self.emb_model.parameters():
+                p.requires_grad = False
+
+        # Inst token
+        if self.inst_token is not None:
+            self.inst_token.requires_grad = bool(self.finetune.tune_inst_token)
+
+        # Wrapper modules
+        for m in [self.align_mlp_inst, self.align_mlp, self.align_mlp_session, self.align_mlp_graph]:
+            if m is not None:
+                for p in m.parameters():
+                    p.requires_grad = bool(self.finetune.tune_align_mlps)
+
+        if self.session_encoder is not None:
+            for p in self.session_encoder.parameters():
+                p.requires_grad = bool(self.finetune.tune_session_encoder)
+
+        if self.cross_attn is not None:
+            for p in self.cross_attn.parameters():
+                p.requires_grad = bool(self.finetune.tune_cross_attn)
+
+        if self.gate is not None:
+            for p in self.gate.parameters():
+                p.requires_grad = bool(self.finetune.tune_gate)
+        if self.gate_temperature is not None:
+            self.gate_temperature.requires_grad = bool(self.finetune.tune_gate)
+
+    def get_param_groups(self):
+        """
+        Returns optimizer param groups with LRs from TrainHyperparams.
+        Use this in your Trainer/optimizer creation code to keep all LRs centralized.
+        """
+        groups = []
+
+        def add(module: Optional[nn.Module], lr: float, wd: Optional[float] = None):
+            if module is None:
+                return
+            params = [p for p in module.parameters() if p.requires_grad]
+            if not params:
+                return
+            groups.append({
+                "params": params,
+                "lr": float(lr),
+                "weight_decay": float(self.train_hp.weight_decay if wd is None else wd),
+            })
+
+        # Wrapper modules
+        add(self.align_mlp_inst, self.train_hp.lr_align)
+        add(self.align_mlp, self.train_hp.lr_align)
+        add(self.align_mlp_session, self.train_hp.lr_align)
+        add(self.align_mlp_graph, self.train_hp.lr_align)
+
+        add(self.session_encoder, self.train_hp.lr_session)
+        add(self.cross_attn, self.train_hp.lr_cross_attn)
+        add(self.gate, self.train_hp.lr_gate)
+
+        # Standalone params
+        if self.inst_token is not None and self.inst_token.requires_grad:
+            groups.append({"params": [self.inst_token], "lr": float(self.train_hp.lr_default), "weight_decay": 0.0})
+        if self.gate_temperature is not None and self.gate_temperature.requires_grad:
+            groups.append({"params": [self.gate_temperature], "lr": float(self.train_hp.lr_gate), "weight_decay": 0.0})
+
+        # Base models (only if enabled)
+        if self.finetune.tune_llm:
+            add(self.llm_model, self.train_hp.lr_llm)
+        if self.finetune.tune_emb:
+            add(self.emb_model, self.train_hp.lr_emb)
+
+        # Fallback: if something trainable wasn’t covered
+        covered = {id(p) for g in groups for p in g["params"]}
+        other = [p for p in self.parameters() if p.requires_grad and id(p) not in covered]
+        if other:
+            groups.append({"params": other, "lr": float(self.train_hp.lr_default), "weight_decay": float(self.train_hp.weight_decay)})
+
+        return groups
 
     # -------------------------------------------------------------------------
     # Init helpers
@@ -535,8 +698,16 @@ class PersonalLLM_Slim_StageAB(nn.Module):
 
         # Gate per token
         gate_in = torch.cat([task_tokens, attn_out], dim=-1)  # (B, T, 2H)
-        temp = torch.clamp(self.gate_temperature, 0.1, 10.0) if self.gate_temperature is not None else 1.0
-        g = torch.sigmoid(self.gate(gate_in) / temp)  # (B, T, 1)
+        temp = self.gate_temperature
+        if temp is None:
+            t = 1.0
+        else:
+            t = torch.clamp(
+                temp,
+                float(self.train_hp.gate_temperature_min),
+                float(self.train_hp.gate_temperature_max),
+            )
+        g = torch.sigmoid(self.gate(gate_in) / t)  # (B, T, 1)
         self._gate_means.append(float(g.mean().detach().cpu()))
 
         fused = (1.0 - g) * task_tokens + g * attn_out

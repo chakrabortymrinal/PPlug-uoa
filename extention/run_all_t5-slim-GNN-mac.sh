@@ -1,7 +1,7 @@
 #!/bin/bash
 
 task_id=3
-epoch=2
+epoch=3
 len=10
 
 mkdir -p ./log

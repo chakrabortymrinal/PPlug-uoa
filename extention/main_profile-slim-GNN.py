@@ -686,20 +686,20 @@ def train_model(model_args, data_args, training_args):
     # [9] Configure stability knobs on the wrapper model
     # -------------------------------------------------------------------------
     # These are custom attributes used by PersonalLLM_Slim (not standard HF).
-    model.max_grad_norm = 1.0
+    model.max_grad_norm = 1.80 #1.0
     model.grad_norm_check_steps = 50
     model.warmup_steps = min(1000, len(train_dataset) // training_args.per_device_train_batch_size)
     model.loss_ema_alpha = 0.05
 
     # Also configure Trainer args for stability:
-    training_args.max_grad_norm = 1.0
+    training_args.max_grad_norm = 1.80 #1.0
     training_args.gradient_checkpointing = False
     training_args.fp16 = False
     training_args.bf16 = False
     training_args.logging_first_step = True
     training_args.warmup_ratio = 0.1
-    training_args.weight_decay = 1e-4
-    training_args.learning_rate = 3e-5
+    training_args.weight_decay = 0.060 #1e-4
+    training_args.learning_rate = 1e-4 #3e-5
 
     # -------------------------------------------------------------------------
     # [10] Ensure gate params are trainable (defensive)
