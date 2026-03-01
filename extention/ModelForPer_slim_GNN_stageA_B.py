@@ -26,31 +26,90 @@ class FinetuneConfig:
 @dataclass
 class TrainHyperparams:
     """
-    Central block for training knobs.
-    Optimizer LRs are used by get_param_groups().
+    ✅ CENTRALIZED: All training/architecture hyperparameters in one place
+    
+    Benefits:
+    - Easy Optuna integration (all search space in one object)
+    - Clear documentation of tunable knobs
+    - Version control friendly (git diff shows param changes)
+    - Eliminates scattered hardcoded values
+    
+    ✅ UPDATED: Best hyperparameters from Optuna study (trial 37, MAE=0.45)
     """
-    # Learning rates (used for optimizer param groups)
+    # =========================================================================
+    # OPTIMIZER LEARNING RATES
+    # =========================================================================
     lr_default: float = 1e-4
-    lr_gate: float = 1.37e-04  # Optimized from 2.37e-04
-    lr_cross_attn: float = 8.64e-05  # Optimized from 4.46e-04
-    lr_align: float = 1.29e-04  # Optimized from 2.70e-04
-    lr_session: float = 1.22e-04  # Optimized from 1.98e-04
+    lr_gate: float = 0.000693424310288062
+    lr_cross_attn: float = 5.8039428979633884e-05
+    lr_align: float = 0.00038210272987863897
+    lr_session: float = 0.00019606824039492657
     lr_llm: float = 1e-5
     lr_emb: float = 1e-5
+    weight_decay: float = 0.05395115580901312
 
-    weight_decay: float = 0.00994  # Optimized from 0.060
-
-    # Gate init / stability
-    gate_bias_init: float = 0.296  # Optimized from -0.766 (NOTE: Major shift from negative to positive!)
-    gate_temperature_init: float = 1.220  # Optimized from 0.487
+    # =========================================================================
+    # MAIN GATE PARAMETERS (Profile/Session Fusion)
+    # =========================================================================
+    gate_bias_init: float = -0.32431152068047325
+    gate_temperature_init: float = 1.0959691973956611
     gate_temperature_min: float = 0.1
     gate_temperature_max: float = 2.0
 
-    # Used by your existing callback utilities
-    max_grad_norm: float = 0.805  # Optimized from 1.80
+    # =========================================================================
+    # GRAPH GATE PARAMETERS (Graph-Specific Fusion)
+    # =========================================================================
+    graph_gate_bias_init: float = -0.6955597228515471
+    graph_gate_temperature_init: float = 1.5790821511577782
+    graph_gate_boost_weight: float = 0.24392438684045603
+    graph_gate_temperature_min: float = 0.1
+    graph_gate_temperature_max: float = 2.0
+
+    # =========================================================================
+    # GRAPH ATTENTION BOOSTING (Controls Graph Priority)
+    # =========================================================================
+    graph_attention_boost: float = 2.0
+    graph_attention_bias: float = 0.5
+    graph_focus_threshold: float = 0.1
+
+    # =========================================================================
+    # SESSION ENCODER ARCHITECTURE
+    # =========================================================================
+    session_num_layers: int = 2
+    session_num_heads: int = 4
+    session_dropout: float = 0.1
+    session_max_len: int = 1024
+
+    # =========================================================================
+    # CROSS-ATTENTION ARCHITECTURE
+    # =========================================================================
+    cross_num_heads: int = 8
+    cross_dropout: float = 0.1
+
+    # =========================================================================
+    # TRAINING DYNAMICS
+    # =========================================================================
+    max_grad_norm: float = 1.3392524375506107
     grad_norm_check_steps: int = 50
-    warmup_steps: int = 50  # Confirmed optimal (unchanged)
+    warmup_steps: int = 50
     loss_ema_alpha: float = 0.05
+
+    # =========================================================================
+    # ALIGNMENT MLP ARCHITECTURE
+    # =========================================================================
+    align_mlp_hidden_factor: float = 1.0
+    align_mlp_dropout: float = 0.1
+
+    # =========================================================================
+    # SPECIAL TOKEN PARAMETERS
+    # =========================================================================
+    inst_token_init_std: float = 0.02
+
+    # =========================================================================
+    # DIAGNOSTIC/LOGGING
+    # =========================================================================
+    log_attention_weights: bool = False
+    log_gate_activations: bool = True
 
 
 class SinusoidalPositionalEncoding(nn.Module):
@@ -109,9 +168,6 @@ class PersonalLLM_Slim_StageAB(nn.Module):
         use_session_encoder: bool = True,
         use_cross_attn: bool = True,
         use_gate: bool = True,
-        session_num_layers: int = 2,
-        session_num_heads: int = 4,
-        cross_num_heads: int = 8,
         graph_dir: str = "../graph_emb",
         bge_emb_dir: str = "../bge_emb",
         finetune: Optional[FinetuneConfig] = None,
@@ -125,19 +181,18 @@ class PersonalLLM_Slim_StageAB(nn.Module):
         self.max_input_len = max_input_len
         self.max_new_len = max_new_len
         self.task_id = task_id
-
         self.bge_emb_dir = bge_emb_dir
 
-        # Central config blocks
+        # ✅ CHANGED: Store config objects first
         self.finetune = finetune or FinetuneConfig()
         self.train_hp = train_hp or TrainHyperparams()
 
-        # A/B toggles (must match main_profile flags)
+        # A/B toggles
         self.use_profile = bool(use_profile)
         self.use_session = bool(use_session)
         self.use_graph = bool(use_graph)
 
-        # internal toggles (kept ON in main_profile)
+        # Internal toggles
         self.use_inst_token = bool(use_inst_token)
         self.use_align_mlp_inst = bool(use_align_mlp_inst)
         self.use_align_mlp = bool(use_align_mlp)
@@ -149,37 +204,29 @@ class PersonalLLM_Slim_StageAB(nn.Module):
 
         # Dimensions
         self.llm_emb_size = getattr(self.llm_model.config, "d_model", None) or self.llm_model.get_input_embeddings().embedding_dim
-        self.emb_emb_size = getattr(self.emb_model.config, "hidden_size", None)
-        if self.emb_emb_size is None:
-            # Very defensive; most HF encoder models have config.hidden_size
-            self.emb_emb_size = self.emb_model.get_input_embeddings().embedding_dim
+        self.emb_emb_size = getattr(self.emb_model.config, "hidden_size", None) or self.emb_model.get_input_embeddings().embedding_dim
 
-        # ---------------------------------------------------------------------
-        # Freeze base models by default (can be overridden by finetune policy)
-        # ---------------------------------------------------------------------
+        # Freeze base models
         for p in self.llm_model.parameters():
             p.requires_grad = False
         for p in self.emb_model.parameters():
             p.requires_grad = False
 
-        # ---------------------------------------------------------------------
-        # Special instruction/personalization token (optional)
-        # Make it live in EMB space (E), then align with align_mlp_inst -> H.
-        # ---------------------------------------------------------------------
+        # ✅ CHANGED: Special token initialization uses train_hp
         if self.use_inst_token:
             self.inst_token = nn.Parameter(torch.zeros(1, 1, self.emb_emb_size))
-            nn.init.normal_(self.inst_token, mean=0.0, std=0.02)
+            nn.init.normal_(self.inst_token, mean=0.0, std=self.train_hp.inst_token_init_std)
         else:
             self.inst_token = None
 
-        # ---------------------------------------------------------------------
-        # Align modules: map BGE/graph embedding space -> LLM hidden size
-        # ---------------------------------------------------------------------
+        # ✅ CHANGED: Alignment MLPs use train_hp
         def _make_align():
+            hidden_size = int(self.emb_emb_size * self.train_hp.align_mlp_hidden_factor)
             return nn.Sequential(
-                nn.Linear(self.emb_emb_size, self.llm_emb_size),
+                nn.Linear(self.emb_emb_size, hidden_size),
                 nn.GELU(),
-                nn.Linear(self.llm_emb_size, self.llm_emb_size),
+                nn.Dropout(self.train_hp.align_mlp_dropout),
+                nn.Linear(hidden_size, self.llm_emb_size),
             )
 
         self.align_mlp_inst = _make_align() if self.use_align_mlp_inst else None
@@ -187,77 +234,85 @@ class PersonalLLM_Slim_StageAB(nn.Module):
         self.align_mlp_session = _make_align() if self.use_align_mlp_session else None
         self.align_mlp_graph = _make_align() if self.use_align_mlp_graph else None
 
-        # ---------------------------------------------------------------------
-        # Stage A: history embeddings (memmap, like existing slim pipeline)
-        # We support either:
-        #   - memmap files in offline_cache_lamp3/
-        #   - torch .emb files in bge_emb/
-        # Without changing dataset, his_id is already "row indices" into these tables.
-        # ---------------------------------------------------------------------
+        # History/Graph embeddings (unchanged)
         self.his_train_memmap = None
         self.his_dev_memmap = None
         self.his_train_tensor = None
         self.his_dev_tensor = None
         self._init_history_memmaps(self.bge_emb_dir)
 
-        # ---------------------------------------------------------------------
-        # Stage A: graph embeddings (precomputed offline): task_{id}_graph.npy
-        # The dataset provides graph_node_ids (pad = -1) and graph_node_mask.
-        # ---------------------------------------------------------------------
         self.graph_node_emb = None
         self._init_graph_embeddings(graph_dir)
 
-        # ---------------------------------------------------------------------
-        # Stage A: session encoder (Transformer over aligned session tokens)
-        # session_ids are history-row ids; we reuse the same history embedding table.
-        # ---------------------------------------------------------------------
-        self.session_pos_enc = SinusoidalPositionalEncoding(self.llm_emb_size, max_len=1024)
+        # ✅ CHANGED: Session encoder uses train_hp
+        self.session_pos_enc = SinusoidalPositionalEncoding(
+            self.llm_emb_size, 
+            max_len=self.train_hp.session_max_len
+        )
+        
         if self.use_session_encoder:
             enc_layer = nn.TransformerEncoderLayer(
                 d_model=self.llm_emb_size,
-                nhead=session_num_heads,
+                nhead=self.train_hp.session_num_heads,
+                dim_feedforward=self.llm_emb_size * 4,
+                dropout=self.train_hp.session_dropout,
                 batch_first=True,
                 norm_first=True,
             )
-            self.session_encoder = nn.TransformerEncoder(enc_layer, num_layers=session_num_layers)
+            self.session_encoder = nn.TransformerEncoder(
+                enc_layer, 
+                num_layers=self.train_hp.session_num_layers
+            )
         else:
             self.session_encoder = None
 
-        # ---------------------------------------------------------------------
-        # Stage B: gated cross attention fusion
-        # task tokens (queries) attend to user tokens (keys/values)
-        # ---------------------------------------------------------------------
+        # ✅ CHANGED: Cross-attention uses train_hp
         if self.use_cross_attn:
             self.cross_attn = nn.MultiheadAttention(
                 embed_dim=self.llm_emb_size,
-                num_heads=cross_num_heads,
+                num_heads=self.train_hp.cross_num_heads,
+                dropout=self.train_hp.cross_dropout,
                 batch_first=True,
             )
         else:
             self.cross_attn = None
 
-        # Gate outputs a per-token scalar gate in [0,1]
+        # ✅ CHANGED: Gates use train_hp
         if self.use_gate:
             self.gate = nn.Linear(self.llm_emb_size * 2, 1)
-            nn.init.constant_(self.gate.bias, float(self.train_hp.gate_bias_init))
-            self.gate_temperature = nn.Parameter(torch.tensor(float(self.train_hp.gate_temperature_init)))
+            nn.init.constant_(self.gate.bias, self.train_hp.gate_bias_init)
+            self.gate_temperature = nn.Parameter(torch.tensor(self.train_hp.gate_temperature_init))
+            
+            if self.use_graph:
+                self.graph_gate = nn.Linear(self.llm_emb_size * 2, 1)
+                nn.init.constant_(self.graph_gate.bias, self.train_hp.graph_gate_bias_init)
+                self.graph_gate_temperature = nn.Parameter(torch.tensor(self.train_hp.graph_gate_temperature_init))
+            else:
+                self.graph_gate = None
+                self.graph_gate_temperature = None
         else:
             self.gate = None
             self.gate_temperature = None
+            self.graph_gate = None
+            self.graph_gate_temperature = None
 
         self._apply_finetune_policy()
 
-        # ---------------------------------------------------------------------
-        # Diagnostics buffers expected by callbacks / your earlier question
-        # ---------------------------------------------------------------------
-        self.max_grad_norm = float(self.train_hp.max_grad_norm)
-        self.grad_norm_check_steps = int(self.train_hp.grad_norm_check_steps)
-        self.warmup_steps = int(self.train_hp.warmup_steps)
-        self.loss_ema_alpha = float(self.train_hp.loss_ema_alpha)
+        # ✅ CHANGED: Diagnostics use train_hp
+        self.max_grad_norm = self.train_hp.max_grad_norm
+        self.grad_norm_check_steps = self.train_hp.grad_norm_check_steps
+        self.warmup_steps = self.train_hp.warmup_steps
+        self.loss_ema_alpha = self.train_hp.loss_ema_alpha
 
         self._loss_ema = None
-        self._grad_norms = []  # <-- your earlier question: store grad norms over time
+        self._grad_norms = []
         self._gate_means = []
+        
+        # ✅ CHANGED: Conditional attention logging
+        if self.train_hp.log_attention_weights:
+            self._last_attn_weights = []
+        else:
+            self._last_attn_weights = None
 
     # -------------------------------------------------------------------------
     # Finetune / optimizer utilities
@@ -321,6 +376,13 @@ class PersonalLLM_Slim_StageAB(nn.Module):
         if self.gate_temperature is not None:
             self.gate_temperature.requires_grad = bool(self.finetune.tune_gate)
 
+        # ✅ NEW: Graph gate trainability
+        if hasattr(self, 'graph_gate') and self.graph_gate is not None:
+            for p in self.graph_gate.parameters():
+                p.requires_grad = bool(self.finetune.tune_gate)
+        if hasattr(self, 'graph_gate_temperature') and self.graph_gate_temperature is not None:
+            self.graph_gate_temperature.requires_grad = bool(self.finetune.tune_gate)
+
     def get_param_groups(self):
         """
         Returns optimizer param groups with LRs from TrainHyperparams.
@@ -349,12 +411,15 @@ class PersonalLLM_Slim_StageAB(nn.Module):
         add(self.session_encoder, self.train_hp.lr_session)
         add(self.cross_attn, self.train_hp.lr_cross_attn)
         add(self.gate, self.train_hp.lr_gate)
+        add(self.graph_gate, self.train_hp.lr_gate)
 
         # Standalone params
         if self.inst_token is not None and self.inst_token.requires_grad:
             groups.append({"params": [self.inst_token], "lr": float(self.train_hp.lr_default), "weight_decay": 0.0})
         if self.gate_temperature is not None and self.gate_temperature.requires_grad:
             groups.append({"params": [self.gate_temperature], "lr": float(self.train_hp.lr_gate), "weight_decay": 0.0})
+        if self.graph_gate_temperature is not None and self.graph_gate_temperature.requires_grad:
+            groups.append({"params": [self.graph_gate_temperature], "lr": float(self.train_hp.lr_gate), "weight_decay": 0.0})
 
         # Base models (only if enabled)
         if self.finetune.tune_llm:
@@ -636,80 +701,180 @@ class PersonalLLM_Slim_StageAB(nn.Module):
         graph_pad: Optional[torch.Tensor],
         batch_size: int,
         device: torch.device,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
-        Concatenate available sources into USER_TOKENS (B, U, H) and key_padding_mask (B, U).
+        ✅ CHANGED: Graph importance now uses train_hp.graph_attention_boost
         """
         toks = []
         pads = []
-
-        if self.use_inst_token and self.inst_token is not None:
-            inst_emb = self.inst_token.expand(batch_size, -1, -1).to(device=device)  # (B, 1, E)
-
-            if self.align_mlp_inst is not None:
-                inst = self.align_mlp_inst(inst_emb)  # (B, 1, H)
-            else:
-                inst = inst_emb  # assumes E==H (unlikely)
-
-            toks.append(inst)
-            pads.append(torch.zeros((batch_size, 1), dtype=torch.bool, device=device))
-
-        if self.use_profile and his_tokens is not None:
-            toks.append(his_tokens)
-            pads.append(his_pad)
-
-        if self.use_session and sess_tokens is not None:
-            toks.append(sess_tokens)
-            pads.append(sess_pad)
-
+        graph_mask_parts = []
+        
+        # ✅ CHANGED: Graph tokens first with configurable boost
         if self.use_graph and graph_tokens is not None:
             toks.append(graph_tokens)
             pads.append(graph_pad)
-
+            graph_mask_parts.append(
+                torch.ones_like(graph_pad, dtype=torch.float32) * self.train_hp.graph_attention_boost
+            )
+        
+        if self.use_inst_token and self.inst_token is not None:
+            inst_emb = self.inst_token.expand(batch_size, -1, -1).to(device=device)
+            if self.align_mlp_inst is not None:
+                inst = self.align_mlp_inst(inst_emb)
+            else:
+                inst = inst_emb
+            toks.append(inst)
+            pads.append(torch.zeros((batch_size, 1), dtype=torch.bool, device=device))
+            graph_mask_parts.append(torch.ones((batch_size, 1), dtype=torch.float32, device=device))
+        
+        if self.use_session and sess_tokens is not None:
+            toks.append(sess_tokens)
+            pads.append(sess_pad)
+            graph_mask_parts.append(torch.ones_like(sess_pad, dtype=torch.float32))
+        
+        if self.use_profile and his_tokens is not None:
+            toks.append(his_tokens)
+            pads.append(his_pad)
+            graph_mask_parts.append(torch.ones_like(his_pad, dtype=torch.float32))
+        
         if not toks:
-            # no personalization sources active: return a dummy 1-token pad so cross-attn doesn't crash
             dummy = torch.zeros((batch_size, 1, self.llm_emb_size), device=device)
             dummy_pad = torch.ones((batch_size, 1), dtype=torch.bool, device=device)
-            return dummy, dummy_pad
+            return dummy, dummy_pad, None
+        
+        user_tokens = torch.cat(toks, dim=1)
+        user_pad = torch.cat(pads, dim=1)
+        
+        graph_importance = torch.cat(graph_mask_parts, dim=1) if (self.use_graph and graph_tokens is not None) else None
+        
+        return user_tokens, user_pad, graph_importance
 
-        user_tokens = torch.cat(toks, dim=1)  # (B, U, H)
-        user_pad = torch.cat(pads, dim=1)     # (B, U)
-        return user_tokens, user_pad
-
-    def _gated_cross_attention(self, task_tokens: torch.Tensor, user_tokens: torch.Tensor, user_pad_mask: torch.Tensor) -> torch.Tensor:
+    def _gated_cross_attention(
+        self, 
+        task_tokens: torch.Tensor, 
+        user_tokens: torch.Tensor, 
+        user_pad_mask: torch.Tensor,
+        graph_importance: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
-        task_tokens: (B, T, H)
-        user_tokens: (B, U, H)
-        user_pad_mask: (B, U) True for PAD/invalid
+        ✅ CHANGED: All hyperparameters now from train_hp
+        ✅ FIXED: Proper QKV projection handling for PyTorch MultiheadAttention
         """
         if self.cross_attn is None:
             return task_tokens
-
-        attn_out, _ = self.cross_attn(
+        
+        attn_out, attn_weights = self.cross_attn(
             query=task_tokens,
             key=user_tokens,
             value=user_tokens,
             key_padding_mask=user_pad_mask,
-            need_weights=False,
-        )  # (B, T, H)
-
+            need_weights=True,
+        )
+        
+        # ✅ CHANGED: Graph attention boosting uses train_hp.graph_attention_bias
+        if graph_importance is not None and self.use_graph:
+            # ✅ FIXED: Manual QKV projection using in_proj_weight/bias
+            # PyTorch MultiheadAttention stores QKV as single matrix when _qkv_same_embed_dim=True
+            embed_dim = self.llm_emb_size
+            
+            if self.cross_attn._qkv_same_embed_dim:
+                # Single projection matrix: [3*embed_dim, embed_dim]
+                q_proj_weight = self.cross_attn.in_proj_weight[:embed_dim, :]
+                k_proj_weight = self.cross_attn.in_proj_weight[embed_dim:2*embed_dim, :]
+                v_proj_weight = self.cross_attn.in_proj_weight[2*embed_dim:, :]
+                
+                if self.cross_attn.in_proj_bias is not None:
+                    q_proj_bias = self.cross_attn.in_proj_bias[:embed_dim]
+                    k_proj_bias = self.cross_attn.in_proj_bias[embed_dim:2*embed_dim]
+                    v_proj_bias = self.cross_attn.in_proj_bias[2*embed_dim:]
+                else:
+                    q_proj_bias = k_proj_bias = v_proj_bias = None
+                
+                Q = F.linear(task_tokens, q_proj_weight, q_proj_bias)
+                K = F.linear(user_tokens, k_proj_weight, k_proj_bias)
+                V = F.linear(user_tokens, v_proj_weight, v_proj_bias)
+            else:
+                # Separate projections (fallback, rarely used)
+                Q = F.linear(task_tokens, self.cross_attn.q_proj_weight, getattr(self.cross_attn, 'q_proj_bias', None))
+                K = F.linear(user_tokens, self.cross_attn.k_proj_weight, getattr(self.cross_attn, 'k_proj_bias', None))
+                V = F.linear(user_tokens, self.cross_attn.v_proj_weight, getattr(self.cross_attn, 'v_proj_bias', None))
+            
+            num_heads = self.cross_attn.num_heads
+            head_dim = embed_dim // num_heads
+            
+            # Reshape to multi-head format: [B, T, H] -> [B, num_heads, T, head_dim]
+            Q = Q.view(Q.size(0), Q.size(1), num_heads, head_dim).transpose(1, 2)
+            K = K.view(K.size(0), K.size(1), num_heads, head_dim).transpose(1, 2)
+            V = V.view(V.size(0), V.size(1), num_heads, head_dim).transpose(1, 2)
+            
+            # Scaled dot-product attention with graph bias
+            scores = torch.matmul(Q, K.transpose(-2, -1)) / (head_dim ** 0.5)
+            
+            # ✅ CHANGED: Use centralized bias parameter
+            graph_bias = (graph_importance - 1.0).unsqueeze(1).unsqueeze(1) * self.train_hp.graph_attention_bias
+            scores = scores + graph_bias
+            
+            if user_pad_mask is not None:
+                scores = scores.masked_fill(
+                    user_pad_mask.unsqueeze(1).unsqueeze(2),
+                    float('-inf')
+                )
+            
+            attn_probs = F.softmax(scores, dim=-1)
+            attn_out_custom = torch.matmul(attn_probs, V)
+            
+            # Reshape back: [B, num_heads, T, head_dim] -> [B, T, embed_dim]
+            attn_out_custom = attn_out_custom.transpose(1, 2).contiguous().view(
+                attn_out_custom.size(0), attn_out_custom.size(2), embed_dim
+            )
+            
+            # Apply output projection
+            attn_out = self.cross_attn.out_proj(attn_out_custom)
+            
+            # ✅ CHANGED: Conditional logging
+            if self.train_hp.log_attention_weights:
+                if self._last_attn_weights is None:
+                    self._last_attn_weights = []
+                self._last_attn_weights.append(attn_probs.detach())
+        
         if self.gate is None:
             return attn_out
-
-        # Gate per token
-        gate_in = torch.cat([task_tokens, attn_out], dim=-1)  # (B, T, 2H)
-        temp = self.gate_temperature
-        if temp is None:
-            t = 1.0
-        else:
-            t = torch.clamp(
-                temp,
-                float(self.train_hp.gate_temperature_min),
-                float(self.train_hp.gate_temperature_max),
+        
+        # ✅ CHANGED: Use centralized temperature bounds
+        gate_in = torch.cat([task_tokens, attn_out], dim=-1)
+        temp = torch.clamp(
+            self.gate_temperature,
+            self.train_hp.gate_temperature_min,
+            self.train_hp.gate_temperature_max,
+        )
+        g = torch.sigmoid(self.gate(gate_in) / temp)
+        
+        # ✅ CHANGED: Graph gate uses centralized parameters
+        if self.use_graph and self.graph_gate is not None:
+            graph_boost_in = torch.cat([task_tokens, attn_out], dim=-1)
+            
+            graph_temp = torch.clamp(
+                self.graph_gate_temperature,
+                self.train_hp.graph_gate_temperature_min,
+                self.train_hp.graph_gate_temperature_max
             )
-        g = torch.sigmoid(self.gate(gate_in) / t)  # (B, T, 1)
-        self._gate_means.append(float(g.mean().detach().cpu()))
-
+            
+            graph_boost = torch.sigmoid(self.graph_gate(graph_boost_in) / graph_temp)
+            
+            if graph_importance is not None:
+                graph_focus = (attn_weights * graph_importance.unsqueeze(1)).sum(dim=-1, keepdim=True)
+                graph_focus = graph_focus / (graph_importance.sum(dim=-1, keepdim=True).unsqueeze(1) + 1e-8)
+                
+                # ✅ CHANGED: Use centralized threshold
+                graph_boost = graph_boost * (graph_focus > self.train_hp.graph_focus_threshold).float()
+            
+            # ✅ CHANGED: Use centralized boost weight
+            g = torch.clamp(g + graph_boost * self.train_hp.graph_gate_boost_weight, 0.0, 1.0)
+        
+        # ✅ CHANGED: Conditional gate logging
+        if self.train_hp.log_gate_activations:
+            self._gate_means.append(float(g.mean().detach().cpu()))
+        
         fused = (1.0 - g) * task_tokens + g * attn_out
         return fused
 
@@ -761,11 +926,11 @@ class PersonalLLM_Slim_StageAB(nn.Module):
             graph_tokens, graph_pad = self._encode_graph_tokens(graph_node_ids, graph_node_mask)
 
         # Stage B: build user token memory + cross-attn fusion
-        user_tokens, user_pad = self._build_user_tokens(
+        user_tokens, user_pad, graph_importance = self._build_user_tokens(
             his_tokens, his_pad, sess_tokens, sess_pad, graph_tokens, graph_pad,
             batch_size=bsz, device=device
         )
-        fused_task_tokens = self._gated_cross_attention(task_tokens, user_tokens, user_pad)  # (B, T, H)
+        fused_task_tokens = self._gated_cross_attention(task_tokens, user_tokens, user_pad, graph_importance)  # (B, T, H)
 
         # Feed fused encoder states into T5 decoder via encoder_outputs
         encoder_outputs = BaseModelOutput(last_hidden_state=fused_task_tokens)

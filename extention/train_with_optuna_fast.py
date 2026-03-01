@@ -312,6 +312,11 @@ def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
     gate_bias_init = trial.suggest_float("gate_bias_init", -1.0, 0.5)
     gate_temp_init = trial.suggest_float("gate_temp_init", 0.3, 1.5)
     
+    # Graph gate hyperparameters (NEW)
+    graph_gate_bias_init = trial.suggest_float("graph_gate_bias_init", -1.0, 1.0)
+    graph_gate_temp_init = trial.suggest_float("graph_gate_temp_init", 0.5, 2.0)
+    graph_gate_boost_weight = trial.suggest_float("graph_gate_boost_weight", 0.1, 0.5)
+    
     # Training dynamics
     warmup_steps = trial.suggest_int("warmup_steps", 50, 300, step=50)
     max_grad_norm = trial.suggest_float("max_grad_norm", 0.5, 2.0)
@@ -328,6 +333,9 @@ def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
     print(f"  lr_session       : {lr_session:.2e}")
     print(f"  gate_bias_init   : {gate_bias_init:.3f}")
     print(f"  gate_temp_init   : {gate_temp_init:.3f}")
+    print(f"  graph_gate_bias  : {graph_gate_bias_init:.3f}")
+    print(f"  graph_gate_temp  : {graph_gate_temp_init:.3f}")
+    print(f"  graph_gate_boost : {graph_gate_boost_weight:.3f}")
     print(f"  warmup_steps     : {warmup_steps}")
     print(f"  max_grad_norm    : {max_grad_norm:.2f}")
     print(f"  weight_decay     : {weight_decay:.3f}")
@@ -364,6 +372,9 @@ def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
         lr_session=lr_session,
         gate_bias_init=gate_bias_init,
         gate_temperature_init=gate_temp_init,
+        graph_gate_bias_init=graph_gate_bias_init,
+        graph_gate_temperature_init=graph_gate_temp_init,
+        graph_gate_boost_weight=graph_gate_boost_weight,
         warmup_steps=warmup_steps,
         max_grad_norm=max_grad_norm,
         weight_decay=weight_decay,

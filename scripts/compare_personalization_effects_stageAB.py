@@ -37,7 +37,7 @@ from extention.ModelForPer_slim_GNN_stageA_B import PersonalLLM_Slim_StageAB
 # 🔧 CONFIG
 # -------------------------------------------------------------------------
 TASK_ID = 3
-CHECKPOINT_PATH = "../extention/output_3/checkpoint-129"  # <-- change to your StageAB checkpoint folder
+CHECKPOINT_PATH = "../extention/output_3/checkpoint-343"  # <-- change to your StageAB checkpoint folder
 MAX_HIS_LEN = 10
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
