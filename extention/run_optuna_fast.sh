@@ -3,7 +3,7 @@
     # --subsample-train 5000 \
     # --subsample-eval 500 \
 python train_with_optuna_fast.py \
-    --llm-model-path ../FlanT5-base \
+    --llm-model-path ../FlanT5-Large \
     --emb-model-path ../bge-base-en-v1.5 \
     --train-file ../LaMP_time_3_subset_id/train_aug_input.json \
     --eval-file ../LaMP_time_3_subset_id/dev_profile.json \
@@ -19,7 +19,7 @@ python train_with_optuna_fast.py \
     --batch-size 16 \
     --logging-steps 100 \
     \
-    --n-trials 25 \
+    --n-trials 20 \
     --use-profile true \
     --use-session true \
     --use-graph true \

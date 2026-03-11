@@ -30,12 +30,114 @@ TASK_ID=3
 EPOCHS=1
 MAX_NEW_LEN=10
 NUM_SEEDS=1
-KEEP_CHECKPOINTS="${KEEP_CHECKPOINTS:-1}"
+KEEP_CHECKPOINTS="${KEEP_CHECKPOINTS:-0}"  # Set to 1 to keep all checkpoints, 0 to delete after metric extraction
 
-# --- Progress tracking (variants x seeds) ---
+# Output directories
+BASE_OUTPUT="./ablation_results"
+METRICS_DIR="${BASE_OUTPUT}/metrics"
+CHECKPOINTS_DIR="${BASE_OUTPUT}/checkpoints"
+LOGS_DIR="${BASE_OUTPUT}/logs"
+
+mkdir -p "${METRICS_DIR}" "${CHECKPOINTS_DIR}" "${LOGS_DIR}"
+
+# Timestamp for this ablation run
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+RESULTS_FILE="${BASE_OUTPUT}/ablation_summary_${TIMESTAMP}.json"
+TABLE_FILE="${BASE_OUTPUT}/ablation_table_${TIMESTAMP}.md"
+
+echo "🔬 Starting Ablation Study at ${TIMESTAMP}"
+echo "📊 Results will be saved to: ${RESULTS_FILE}"
+echo "📋 Table will be saved to: ${TABLE_FILE}"
+echo ""
+
+# ============================================================================
+# EXPERIMENT CONFIGURATIONS (array-based, Bash 3+ compatible)
+# ============================================================================
+
+# VARIANT_NAMES=("baseline" "session" "graph" "full")
+# VARIANT_PROFILES=("true" "true" "true" "true")
+# VARIANT_SESSIONS=("false" "true" "false" "true")
+# VARIANT_GRAPHS=("false" "false" "true" "true")
+# # VARIANT_INST_TOKENS=("true" "true" "true" "true")
+
+# ✅ Set to 1 to enable, 0 to disable
+ENABLE_BASELINE=1
+ENABLE_SESSION=0   # ✅ Disabled
+ENABLE_GRAPH=1
+ENABLE_FULL=1
+
+# Build variant arrays dynamically
+VARIANT_NAMES=()
+VARIANT_PROFILES=()
+VARIANT_SESSIONS=()
+VARIANT_GRAPHS=()
+
+if [ "${ENABLE_BASELINE}" -eq 1 ]; then
+    VARIANT_NAMES+=("baseline")
+    VARIANT_PROFILES+=("true")
+    VARIANT_SESSIONS+=("false")
+    VARIANT_GRAPHS+=("false")
+fi
+
+if [ "${ENABLE_SESSION}" -eq 1 ]; then
+    VARIANT_NAMES+=("session")
+    VARIANT_PROFILES+=("true")
+    VARIANT_SESSIONS+=("true")
+    VARIANT_GRAPHS+=("false")
+fi
+
+if [ "${ENABLE_GRAPH}" -eq 1 ]; then
+    VARIANT_NAMES+=("graph")
+    VARIANT_PROFILES+=("true")
+    VARIANT_SESSIONS+=("false")
+    VARIANT_GRAPHS+=("true")
+fi
+
+if [ "${ENABLE_FULL}" -eq 1 ]; then
+    VARIANT_NAMES+=("full")
+    VARIANT_PROFILES+=("true")
+    VARIANT_SESSIONS+=("true")
+    VARIANT_GRAPHS+=("true")
+fi
+
+# Validate at least one variant is enabled
+if [ ${#VARIANT_NAMES[@]} -eq 0 ]; then
+    echo "❌ Error: No variants enabled! Set at least one ENABLE_* flag to 1."
+    exit 1
+fi
+
+echo "📋 Enabled variants: ${VARIANT_NAMES[*]}"
+echo ""
+
+# ============================================================================
+# PROGRESS TRACKING (calculated after arrays are built)
+# ============================================================================
+
 TOTAL_RUNS=$(( ${#VARIANT_NAMES[@]} * NUM_SEEDS ))
 RUNS_DONE=0
 AB_START_TS=$(date +%s)
+
+echo "🔧 Configuration:"
+echo "   Task ID: ${TASK_ID}"
+echo "   Epochs: ${EPOCHS}"
+echo "   Seeds: ${NUM_SEEDS} (starting from 42)"
+echo "   Variants: ${#VARIANT_NAMES[@]}"
+echo ""
+
+for i in "${!VARIANT_NAMES[@]}"; do
+    echo "   [$i] ${VARIANT_NAMES[$i]}: profile=${VARIANT_PROFILES[$i]} session=${VARIANT_SESSIONS[$i]} graph=${VARIANT_GRAPHS[$i]}"
+done
+
+echo ""
+echo "   Total experiments: ${TOTAL_RUNS}"
+echo "   Checkpoints kept: $([ "${KEEP_CHECKPOINTS}" -eq 1 ] && echo "YES" || echo "NO")"
+echo ""
+
+if [ "${TOTAL_RUNS}" -gt 5 ]; then
+    echo "⏱️  Estimated time: ~$((TOTAL_RUNS * 20)) minutes (assuming 20 min/run)"
+    read -p "Press Enter to continue or Ctrl+C to abort..." 
+    echo ""
+fi
 
 format_hms() {
     local total=$1
@@ -62,35 +164,6 @@ print_progress() {
 
     echo "📈 Progress: ${RUNS_DONE}/${TOTAL_RUNS} (${pct}%) | elapsed=$(format_hms "${elapsed}") | eta=$(format_hms "${eta}") | ${last_status}"
 }
-# --- End progress tracking ---
-
-# Output directories
-BASE_OUTPUT="./ablation_results"
-METRICS_DIR="${BASE_OUTPUT}/metrics"
-CHECKPOINTS_DIR="${BASE_OUTPUT}/checkpoints"
-LOGS_DIR="${BASE_OUTPUT}/logs"
-
-mkdir -p "${METRICS_DIR}" "${CHECKPOINTS_DIR}" "${LOGS_DIR}"
-
-# Timestamp for this ablation run
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-RESULTS_FILE="${BASE_OUTPUT}/ablation_summary_${TIMESTAMP}.json"
-TABLE_FILE="${BASE_OUTPUT}/ablation_table_${TIMESTAMP}.md"
-
-echo "🔬 Starting Ablation Study at ${TIMESTAMP}"
-echo "📊 Results will be saved to: ${RESULTS_FILE}"
-echo "📋 Table will be saved to: ${TABLE_FILE}"
-echo ""
-
-# ============================================================================
-# EXPERIMENT CONFIGURATIONS (array-based, Bash 3+ compatible)
-# ============================================================================
-
-VARIANT_NAMES=("baseline" "session" "graph" "full")
-VARIANT_PROFILES=("true" "true" "true" "true")
-VARIANT_SESSIONS=("false" "true" "false" "true")
-VARIANT_GRAPHS=("false" "false" "true" "true")
-# VARIANT_INST_TOKENS=("true" "true" "true" "true")
 
 # ============================================================================
 # FUNCTION: Run single training job
@@ -123,7 +196,7 @@ run_single_experiment() {
 
         "${PYTHON_BIN}" main_profile-slim-GNN.py \
             --task_id ${TASK_ID} \
-            --model_path ../FlanT5-base/ \
+            --model_path ../FlanT5-large/ \
             --emb_model_path ../bge-base-en-v1.5/ \
             --train_file ../LaMP_time_${TASK_ID}_subset_id/train_aug_input.json \
             --dev_file ../LaMP_time_${TASK_ID}_subset_id/dev_profile.json \
@@ -246,6 +319,8 @@ for i in "${!VARIANT_NAMES[@]}"; do
         if ! run_single_experiment "${variant}" "${seed}" "${use_profile}" "${use_session}" "${use_graph}"; then
             failed=$((failed + 1))
         fi
+        RUNS_DONE=$((RUNS_DONE + 1))
+        print_progress "${variant}_seed${seed}"
     done
 
     echo ""

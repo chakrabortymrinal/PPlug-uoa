@@ -1,0 +1,185 @@
+
+import json
+import os
+import random
+from collections import defaultdict, Counter
+
+BASE_DIR = ".."
+TASK_ID = 3
+SUBSET_SIZE_TRAIN = 500   # desired total samples
+SUBSET_SIZE_DEV = 200     # desired total samples
+SEED = 42
+
+MAX_PROFILE_ITEMS = 50  # only keep first N history entries
+
+# 🆕 Trim profile history size for each question
+# Option A (default): randomly keep between 8 and 15 history items
+# Option B: keep full history (no trimming)
+USE_FULL_HISTORY = False
+
+# 🆕 NEW: Normalize rating distribution inside each profile by capping per rating class
+# If True, we will keep up to MAX_PER_RATING items for each rating (1..5)
+NORMALIZE_PROFILE_RATINGS = True
+MAX_PER_RATING = 8  # per rating bucket within a profile (total kept <= 5 * MAX_PER_RATING)
+
+random.seed(SEED)
+
+lamp_dir = os.path.join(BASE_DIR, f"LaMP_time_{TASK_ID}")
+subset_dir = os.path.join(BASE_DIR, f"LaMP_time_{TASK_ID}_subset")
+os.makedirs(subset_dir, exist_ok=True)
+
+
+def _extract_rating(item):
+    """
+    Try to extract a 1..5 rating from a profile item.
+    Supports common shapes:
+      - {"rating": 5, ...}
+      - {"score": 5, ...}
+      - {"stars": 5, ...}
+      - {"output": "5", ...}
+    Returns: "1".."5" or None
+    """
+    if not isinstance(item, dict):
+        return None
+
+    for k in ("rating", "score", "stars", "output"):
+        if k in item:
+            v = item.get(k)
+            if isinstance(v, str):
+                v = v.strip()
+            try:
+                iv = int(v)
+            except Exception:
+                continue
+            if 1 <= iv <= 5:
+                return str(iv)
+
+    return None
+
+
+def _normalize_profile_by_rating(profile, max_per_rating):
+    """
+    Keep at most `max_per_rating` items per rating bucket (1..5).
+    Preserves original order within each bucket.
+    Returns a concatenated list (buckets 1..5) then shuffles lightly to avoid blocky ordering.
+    """
+    buckets = {str(i): [] for i in range(1, 6)}
+    others = []
+
+    for item in profile:
+        r = _extract_rating(item)
+        if r is None:
+            others.append(item)
+            continue
+        if len(buckets[r]) < max_per_rating:
+            buckets[r].append(item)
+
+    normalized = []
+    for i in range(1, 6):
+        normalized.extend(buckets[str(i)])
+
+    # If no ratings could be extracted, fall back to original profile
+    if len(normalized) == 0:
+        return profile
+
+    # Optional: mix in unrated items up to remaining capacity
+    # Keep the total size bounded by 5*max_per_rating (or less)
+    remaining = max(0, (5 * max_per_rating) - len(normalized))
+    if remaining > 0 and len(others) > 0:
+        normalized.extend(others[:remaining])
+
+    # Avoid always grouping by rating
+    random.shuffle(normalized)
+    return normalized
+
+
+def stratified_subset_pair(q_file, o_file, dst_q_file, dst_o_file, subset_size):
+    """
+    Create a subset with equal class distribution based on outputs['golds'][i]['output'].
+    If a class does not have enough samples, oversample with replacement.
+    Output order matches question order exactly for aggr_id compatibility.
+    """
+    questions = json.load(open(q_file))
+    outputs = json.load(open(o_file))
+
+    # Build ID → output mapping
+    id_to_output = {o["id"]: o for o in outputs["golds"]}
+    id_to_label = {o["id"]: str(o["output"]) for o in outputs["golds"]}
+
+    # Group question entries by class label
+    class_to_questions = defaultdict(list)
+    for q in questions:
+        label = id_to_label.get(q["id"])
+        if label is not None:
+            class_to_questions[label].append(q)
+
+    classes = sorted(class_to_questions.keys())
+    num_classes = len(classes)
+
+    # How many samples per class
+    per_class = subset_size // num_classes
+    remainder = subset_size % num_classes
+
+    subset_questions = []
+    for i, cls in enumerate(classes):
+        candidates = class_to_questions[cls]
+        take_n = per_class + (1 if i < remainder else 0)  # spread remainder
+
+        if len(candidates) < take_n:
+            print(f"⚠️ Class {cls}: only {len(candidates)} samples, oversampling to {take_n}")
+            extras_needed = take_n - len(candidates)
+            extras = random.choices(candidates, k=extras_needed)  # duplicates allowed
+            subset_questions.extend(candidates + extras)
+        else:
+            subset_questions.extend(random.sample(candidates, take_n))
+
+    for q in subset_questions:
+        if "profile" in q and isinstance(q["profile"], list):
+            if USE_FULL_HISTORY:
+                continue  # keep all history for this id
+
+            # 🆕 NEW: rating normalization inside profile (caps per rating bucket)
+            if NORMALIZE_PROFILE_RATINGS:
+                q["profile"] = _normalize_profile_by_rating(q["profile"], MAX_PER_RATING)
+
+            # Keep a bounded amount of history overall as well
+            max_items = random.randint(15, 40)
+            q["profile"] = q["profile"][:max_items]
+
+    # Shuffle to avoid class order bias
+    random.shuffle(subset_questions)
+
+    # Maintain exact question-output alignment
+    subset_ids_order = [q["id"] for q in subset_questions]
+    outputs_subset_ordered = {
+        "golds": [id_to_output[q_id] for q_id in subset_ids_order]
+    }
+
+    # Save files
+    json.dump(subset_questions, open(dst_q_file, "w"), ensure_ascii=False, indent=2)
+    json.dump(outputs_subset_ordered, open(dst_o_file, "w"), ensure_ascii=False, indent=2)
+
+    print(f"✅ Balanced {os.path.basename(dst_q_file)} aligned with {os.path.basename(dst_o_file)}")
+    counts = Counter(id_to_label[i] for i in subset_ids_order)
+    print(f"   🎯 Final class distribution: {dict(counts)} (Total: {len(subset_questions)})")
+
+
+# Train balanced subset
+stratified_subset_pair(
+    os.path.join(lamp_dir, "train_questions.json"),
+    os.path.join(lamp_dir, "train_outputs.json"),
+    os.path.join(subset_dir, "train_questions.json"),
+    os.path.join(subset_dir, "train_outputs.json"),
+    SUBSET_SIZE_TRAIN
+)
+
+# Dev balanced subset
+stratified_subset_pair(
+    os.path.join(lamp_dir, "dev_questions.json"),
+    os.path.join(lamp_dir, "dev_outputs.json"),
+    os.path.join(subset_dir, "dev_questions.json"),
+    os.path.join(subset_dir, "dev_outputs.json"),
+    SUBSET_SIZE_DEV
+)
+
+print("✅ All balanced subset files regenerated in", subset_dir)

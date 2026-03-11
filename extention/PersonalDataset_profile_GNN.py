@@ -20,6 +20,11 @@ class PersonalDataset:
       - Keep graph IDs maskable:
           Use -1 for "missing node" (so 0 can remain a valid node if needed)
 
+    ✅ CUDA COMPLIANCE:
+      - All tensors returned from __getitem__() are on CPU (PyTorch Dataset convention)
+      - DataLoader/collator handles batching and device transfer (.to(device))
+      - No GPU operations in Dataset class (prevents multiprocessing issues)
+
     Expected JSONL record structure:
       {
         "input":  "<question/prompt>",
@@ -141,6 +146,8 @@ class PersonalDataset:
         """
         Pad or truncate a list of IDs to a fixed length.
 
+        ✅ CUDA COMPLIANCE: Returns CPU tensor (device placement handled by collator).
+
         Padding conventions:
           - history / session ids: 0 means "pad / missing"
           - graph_node_ids:        -1 means "missing node" BEFORE padding;
@@ -152,12 +159,14 @@ class PersonalDataset:
             pad_to_len: target length (defaults to self.max_his_len)
 
         Returns:
-            torch.LongTensor of shape (pad_to_len,)
+            torch.LongTensor of shape (pad_to_len,) on CPU
         """
         pad_len = pad_to_len if pad_to_len is not None else self.max_his_len
         his_ids = his_ids[:pad_len]                      # truncate
         his_ids += [0] * (pad_len - len(his_ids))        # pad with zeros
-        return torch.tensor(his_ids, dtype=torch.long)
+        
+        # ✅ CUDA FIX: Explicitly create on CPU (default, but being explicit)
+        return torch.tensor(his_ids, dtype=torch.long, device='cpu')
 
     # =====================================================================
     # [GETITEM] Build one sample dict consumed by Trainer/DataCollator
@@ -165,6 +174,11 @@ class PersonalDataset:
     def __getitem__(self, idx):
         """
         Build a single training sample dict for DataLoader.
+
+        ✅ CUDA COMPLIANCE:
+          - All tensors returned on CPU (PyTorch Dataset convention)
+          - DataLoader will batch these and move to device
+          - Model's forward() receives tensors on correct device
 
         High-level stages:
           [1] Parse JSONL → input_str, output_str, raw his_id_list
@@ -260,12 +274,15 @@ class PersonalDataset:
             padding='max_length',
             return_tensors="pt"
         )
-        llm_input_ids = llm_encoded["input_ids"].squeeze(0)
+        llm_input_ids = llm_encoded["input_ids"].squeeze(0)  # (seq,) on CPU
 
         # Append special personalization tokens (must exist in tokenizer vocab)
         inst_id = self.llm_tokenizer.convert_tokens_to_ids("[INST_PER_TOKEN]")
         spc_id = self.llm_tokenizer.convert_tokens_to_ids("[SPC_PER_TOKEN]")
-        llm_input_ids = torch.cat([llm_input_ids, torch.tensor([inst_id, spc_id], dtype=torch.long)])
+        
+        # ✅ CUDA FIX: Ensure special tokens created on same device (CPU)
+        special_tokens = torch.tensor([inst_id, spc_id], dtype=torch.long, device=llm_input_ids.device)
+        llm_input_ids = torch.cat([llm_input_ids, special_tokens])
 
         # Crop to max length after adding tokens
         if llm_input_ids.size(0) > self.max_input_len:
@@ -285,10 +302,11 @@ class PersonalDataset:
             truncation=True,
             return_tensors="pt"
         )
-        emb_input_ids = emb_encoded["input_ids"].squeeze(0)
+        emb_input_ids = emb_encoded["input_ids"].squeeze(0)  # (seq,) on CPU
         emb_attention_mask = emb_encoded["attention_mask"].squeeze(0)
 
         # Keep token_type_ids for compatibility (many models ignore it)
+        # ✅ CUDA FIX: Create token_type_ids on same device as input_ids
         emb_token_type_ids = torch.zeros_like(emb_input_ids)
 
         # Crop embedding inputs too (defensive)
@@ -305,19 +323,24 @@ class PersonalDataset:
             max_length=self.max_new_len,
             truncation=True,
             return_tensors="pt"
-        )["input_ids"].squeeze(0)
+        )["input_ids"].squeeze(0)  # (tgt,) on CPU
 
+        # ✅ CUDA COMPLIANCE: All tensors returned are on CPU
+        # DataLoader/collator will:
+        #   1. Batch these samples
+        #   2. Move batch to device via .to(device)
+        #   3. Pass to model.forward()
         return {
-            "llm_input_ids": llm_input_ids,
-            "llm_attention_mask": llm_attention_mask,
-            "labels": labels,
-            "emb_input_ids": emb_input_ids,
-            "emb_attention_mask": emb_attention_mask,
-            "emb_token_type_ids": emb_token_type_ids,
-            "his_id": his_id,
-            "session_ids": session_ids,
-            "graph_node_ids": graph_node_ids,
-            "graph_node_mask": graph_node_mask
+            "llm_input_ids": llm_input_ids,              # CPU tensor
+            "llm_attention_mask": llm_attention_mask,    # CPU tensor
+            "labels": labels,                            # CPU tensor
+            "emb_input_ids": emb_input_ids,              # CPU tensor
+            "emb_attention_mask": emb_attention_mask,    # CPU tensor
+            "emb_token_type_ids": emb_token_type_ids,    # CPU tensor
+            "his_id": his_id,                            # CPU tensor
+            "session_ids": session_ids,                  # CPU tensor
+            "graph_node_ids": graph_node_ids,            # CPU tensor
+            "graph_node_mask": graph_node_mask           # CPU tensor
         }
 
 

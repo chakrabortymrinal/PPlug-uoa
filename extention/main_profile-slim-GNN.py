@@ -72,6 +72,8 @@ def _get_allowed_rating_token_ids(tokenizer):
 
 class _RestrictToRatingTokensProcessor(transformers.LogitsProcessor):
     """
+    ✅ CUDA-safe: operates on logits tensor device.
+    
     A logits processor that masks ALL tokens except the allowed rating tokens.
 
     HF generation pipeline calls this on each decoding step:
@@ -85,12 +87,16 @@ class _RestrictToRatingTokensProcessor(transformers.LogitsProcessor):
         self.allowed = set(allowed_token_ids)
 
     def __call__(self, input_ids, scores):
+        """
+        ✅ CUDA FIX: Create mask on same device as scores.
+        """
         # If allowed list is empty (tokenizer splits digits oddly),
         # do nothing to avoid breaking generation.
         if not self.allowed:
             return scores
 
-        mask = torch.full_like(scores, float("-inf"))
+        # ✅ CUDA FIX: Use scores.device instead of default device
+        mask = torch.full_like(scores, float("-inf"), device=scores.device)
         for tid in self.allowed:
             mask[:, tid] = 0.0
         return scores + mask
@@ -107,12 +113,9 @@ class RatingOnlyLogitsProcessorList(transformers.LogitsProcessorList):
 # =============================================================================
 def _safe_ratio(x: torch.Tensor) -> float:
     """
+    ✅ CUDA-safe: uses .detach().cpu() for conversion.
+    
     Convert a boolean tensor or numeric tensor to a mean ratio.
-
-    Used to print quick stats like:
-      - what fraction of session_ids is non-padding?
-      - what fraction of graph ids are valid?
-
     Returns NaN if tensor is missing/empty.
     """
     if x is None:
@@ -121,6 +124,8 @@ def _safe_ratio(x: torch.Tensor) -> float:
         x = torch.as_tensor(x)
     if x.numel() == 0:
         return float("nan")
+    
+    # ✅ CUDA FIX: Move to CPU before converting to float
     return float(x.float().mean().detach().cpu())
 
 
@@ -274,6 +279,8 @@ class GradientMonitoringCallback(TrainerCallback):
 
 class GradientFlowCheckCallback(TrainerCallback):
     """
+    ✅ CUDA-safe: uses .detach().cpu() for gradient norm computation.
+    
     Periodically prints a per-module gradient norm summary.
 
     This is a "deep" diagnostic: it helps confirm that the fusion stack is actually
@@ -292,7 +299,9 @@ class GradientFlowCheckCallback(TrainerCallback):
         self.min_grad_norm = min_grad_norm
     
     def on_backward_end(self, args, state, control, **kwargs):
-        """Called after backward pass — check all modules have non-zero gradients."""
+        """
+        ✅ CUDA FIX: Use .detach().cpu() when computing gradient norms.
+        """
         model = kwargs.get('model')
         
         print("\n" + "="*60)
@@ -316,12 +325,14 @@ class GradientFlowCheckCallback(TrainerCallback):
             # Modules can be either Parameter or nn.Module
             if isinstance(module, torch.nn.Parameter):
                 if module.grad is not None:
-                    total_grad_norm = module.grad.norm().item()
+                    # ✅ CUDA FIX: Detach and move to CPU
+                    total_grad_norm = module.grad.detach().cpu().norm().item()
                     has_grad = True
             else:
                 for param in module.parameters():
                     if param.grad is not None:
-                        total_grad_norm += param.grad.norm().item() ** 2
+                        # ✅ CUDA FIX: Detach and move to CPU
+                        total_grad_norm += param.grad.detach().cpu().norm().item() ** 2
                         has_grad = True
                 total_grad_norm = total_grad_norm ** 0.5
             
@@ -754,8 +765,16 @@ def train_model(model_args, data_args, training_args):
     # but labels/inputs can still differ depending on truncation settings,
     # so we pad to longest in batch for safety.
     def my_collator(features):
+        """
+        ✅ CUDA-safe: Returns tensors on CPU (Trainer moves to device).
+        
+        Custom collator for PersonalDataset that handles:
+          - Standard LLM inputs (input_ids, attention_mask, labels)
+          - Embedding model inputs
+          - Personalization inputs (his_id, session_ids, graph_node_ids/mask)
+        """
         def pad_to_longest(key, dtype=torch.long, pad_value=0):
-            # Handle missing keys gracefully (e.g., dataset doesn't emit graph fields)
+            # Handle missing keys gracefully
             if not any(key in f for f in features):
                 return None
             
@@ -763,6 +782,8 @@ def train_model(model_args, data_args, training_args):
                 torch.as_tensor(f.get(key, []), dtype=dtype) 
                 for f in features
             ]
+            
+            # ✅ CUDA FIX: pad_sequence returns CPU tensors by default (correct behavior)
             return pad_sequence(
                 tensors,
                 batch_first=True,
@@ -772,23 +793,21 @@ def train_model(model_args, data_args, training_args):
         batch = {
             'llm_input_ids': pad_to_longest('llm_input_ids'),
             'llm_attention_mask': pad_to_longest('llm_attention_mask'),
-            'labels': pad_to_longest('labels'),
+            'labels': pad_to_longest('labels', pad_value=-100),  # ✅ HF convention
             'emb_input_ids': pad_to_longest('emb_input_ids'),
             'emb_attention_mask': pad_to_longest('emb_attention_mask'),
             'emb_token_type_ids': pad_to_longest('emb_token_type_ids'),
             'his_id': pad_to_longest('his_id'),
             'session_ids': pad_to_longest('session_ids'),
-
-            # Graph padding conventions:
-            #   - ids: pad with -1 (meaning "invalid node")
-            #   - mask: pad with 0 (since dtype=torch.long and pad_value default is 0)
-            'graph_node_ids': pad_to_longest('graph_node_ids', pad_value=-1),
+            'graph_node_ids': pad_to_longest('graph_node_ids', pad_value=-1),  # ✅ -1 for invalid
             'graph_node_mask': pad_to_longest('graph_node_mask', dtype=torch.long)
         }
         
         # Drop missing keys (None) to avoid passing them into the model
         batch = {k: v for k, v in batch.items() if v is not None}
         
+        # ✅ CUDA COMPLIANCE: All tensors are on CPU
+        # Trainer will handle .to(device) via _prepare_inputs()
         return batch
 
     # -------------------------------------------------------------------------
@@ -815,10 +834,14 @@ def train_model(model_args, data_args, training_args):
 
     test_batch = next(iter(train_loader))
 
-    # Move tensors to device (cpu/cuda)
+    # ✅ CUDA FIX: Move tensors to correct device
+    device = training_args.device if hasattr(training_args, 'device') else torch.device('cpu')
     for key in test_batch:
         if isinstance(test_batch[key], torch.Tensor):
-            test_batch[key] = test_batch[key].to(training_args.device)
+            test_batch[key] = test_batch[key].to(device)
+
+    # Also move model to device
+    model = model.to(device)
 
     # Filter out None values defensively
     test_batch = {k: v for k, v in test_batch.items() if v is not None}
@@ -835,8 +858,10 @@ def train_model(model_args, data_args, training_args):
         print(f"❌ IndexError during forward pass: {e}")
         print(f"\nDebug info:")
         for k, v in test_batch.items():
-            shape_info = f"shape={v.shape}" if hasattr(v, 'shape') else f"type={type(v)}"
-            print(f"  {k}: {shape_info}")
+            if hasattr(v, 'shape'):
+                print(f"  {k}: shape={v.shape}, device={v.device}, dtype={v.dtype}")
+            else:
+                print(f"  {k}: type={type(v)}")
         raise
     
     loss = outputs["loss"]
@@ -844,7 +869,6 @@ def train_model(model_args, data_args, training_args):
     if loss is None or loss.grad_fn is None:
         print("❌ CRITICAL: Loss has no grad_fn! Forward pass broken.")
         print(f"   Loss: {loss}")
-        print(f"   Loss type: {type(loss)}")
         exit(1)
 
     print(f"   ✅ Loss: {loss.item():.6f} | requires_grad: {loss.requires_grad}")
@@ -880,7 +904,8 @@ def train_model(model_args, data_args, training_args):
 
         for param in module.parameters():
             if param.requires_grad and param.grad is not None:
-                total_norm += param.grad.norm().item() ** 2
+                # ✅ CUDA FIX: Detach and move to CPU
+                total_norm += param.grad.detach().cpu().norm().item() ** 2
                 param_count += 1
                 has_grad = True
 
